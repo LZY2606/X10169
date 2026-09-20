@@ -16,12 +16,17 @@ import { browser } from '$app/environment';
 import { onDestroy, tick } from 'svelte';
 import { comparePaths, pathExists, setPaths, traversePath, traversePaths } from '$lib/traversal.js';
 import {
-	splitPath,
 	type FormPathType,
 	mergePath,
 	type FormPath,
 	type FormPathLeaves
 } from '$lib/stringPath.js';
+import {
+	parsePath,
+	pathKey,
+	remapMetadataTree,
+	hasArrayStructureChange
+} from '$lib/pathModel.js';
 import { beforeNavigate, goto, invalidateAll } from '$app/navigation';
 import { SuperFormError, flattenErrors, mapErrors, updateErrors } from '$lib/errors.js';
 import { cancelFlash, shouldSyncFlash } from './flash.js';
@@ -862,7 +867,7 @@ export function superForm<
 				currentPath.pop();
 			}
 
-			const joinedPath = currentPath.join('.');
+			const joinedPath = pathKey(currentPath);
 
 			const lastPath = error.path[error.path.length - 1];
 			const isObjectError = lastPath == '_errors';
@@ -873,7 +878,7 @@ export function superForm<
 					// If array/object, any part of the path can match. If not, exact match is required
 					return isObjectError
 						? currentPath && path && currentPath.length > 0 && currentPath[0] == path[0]
-						: joinedPath == path.join('.');
+						: joinedPath == pathKey(path);
 				});
 
 			function addError() {
@@ -1274,7 +1279,7 @@ export function superForm<
 	function Tainted_hasBeenTainted(path?: FormPath<T>): boolean {
 		if (!Data.tainted) return false;
 		if (!path) return !!Data.tainted;
-		const field = pathExists(Data.tainted, splitPath(path));
+		const field = pathExists(Data.tainted, parsePath(path));
 		return !!field && field.key in field.parent;
 	}
 
@@ -1287,7 +1292,7 @@ export function superForm<
 		if (typeof path === 'object') return Tainted__isObjectTainted(path);
 		if (!Data.tainted || path === undefined) return false;
 
-		const field = pathExists(Data.tainted, splitPath(path));
+		const field = pathExists(Data.tainted, parsePath(path));
 		return Tainted__isObjectTainted(field?.value);
 	}
 
@@ -1303,6 +1308,34 @@ export function superForm<
 	}
 
 	/**
+	 * Migrates tainted + errors metadata when the form data array structure
+	 * changes. Both stores consume the exact same identity-based mapping,
+	 * which is what prevents errors and tainted from drifting apart.
+	 */
+	function PathMigration_migrate(newData: T) {
+		const oldData = Data.form;
+		if (!hasArrayStructureChange(oldData, newData)) return;
+
+		Tainted.state.update((currentlyTainted) => {
+			return remapMetadataTree(
+				oldData,
+				newData,
+				currentlyTainted as Record<string, unknown> | undefined
+			) as TaintedFields<T> | undefined;
+		});
+
+		// Migrate the raw error store directly, bypassing updateErrors, which
+		// should only apply to freshly validated error sets.
+		_errors.update((currentErrors) =>
+			remapMetadataTree(
+				oldData,
+				newData,
+				currentErrors as Record<string, unknown> | undefined
+			) as ValidationErrors<T>
+		);
+	}
+
+	/**
 	 * Updates the tainted state. Use most of the time, except when submitting.
 	 */
 	function Tainted_update(newData: T, taintOptions: TaintOption | 'ignore') {
@@ -1311,9 +1344,14 @@ export function superForm<
 		// immediately cleared by client-side validation.
 		if (taintOptions == 'ignore') return;
 
+		// When array elements move (insert/delete in the middle), migrate the
+		// parallel metadata trees (tainted + errors) by element identity/value
+		// instead of leaving them attached to stale positions.
+		PathMigration_migrate(newData);
+
 		const paths = comparePaths(newData, Data.form);
 		//console.log('paths:', JSON.stringify(paths));
-		const newTainted = comparePaths(newData, Tainted.clean).map((path) => path.join());
+		const newTainted = comparePaths(newData, Tainted.clean).map((path) => pathKey(path));
 		//console.log('newTainted:', JSON.stringify(newTainted));
 
 		if (paths.length) {
@@ -1322,7 +1360,7 @@ export function superForm<
 
 				setPaths(currentlyTainted, paths, (path, data) => {
 					// If value goes back to the clean value, untaint the path
-					if (!newTainted.includes(path.join())) return undefined;
+					if (!newTainted.includes(pathKey(path))) return undefined;
 
 					const currentValue = traversePath(newData, path);
 					const cleanPath = traversePath(Tainted.clean, path);
@@ -2192,7 +2230,7 @@ export function superForm<
 			if (typeof opts.errors == 'string') opts.errors = [opts.errors];
 
 			let data: T;
-			const splittedPath = splitPath(path);
+			const splittedPath = parsePath(path);
 
 			if ('value' in opts) {
 				if (opts.update === true || opts.update === 'value') {

@@ -1,4 +1,12 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import {
+	getPathNode,
+	parsePath,
+	pathKey,
+	setPathNodes,
+	type PathNode,
+	type TypedPath
+} from './pathModel.js';
 
 export type PathData = {
 	parent: any;
@@ -9,14 +17,17 @@ export type PathData = {
 	set: (value: any) => 'skip';
 };
 
-function setPath<T extends object>(parent: T, key: keyof T, value: any) {
-	// Prevent prototype injection
-	if (key === '__proto__' || key === 'prototype') {
-		throw new Error("Cannot set an object's `__proto__` or `prototype` property");
-	}
-
-	parent[key] = value;
-	return 'skip' as const;
+function toData(node: PathNode | undefined): PathData | undefined {
+	if (!node) return undefined;
+	return {
+		parent: node.parent,
+		key: node.key,
+		value: node.value,
+		// Legacy consumers expect stringified segments.
+		path: node.path.map((segment) => String(segment)),
+		isLeaf: node.isLeaf,
+		set: node.set
+	};
 }
 
 function isInvalidPath(originalPath: (string | number | symbol)[], pathData: PathData) {
@@ -36,7 +47,8 @@ export function pathExists<T extends object>(
 	} = {}
 ): PathData | undefined {
 	if (!options.modifier) {
-		options.modifier = (pathData) => (isInvalidPath(path, pathData) ? undefined : pathData.value);
+		options.modifier = (pathData) =>
+			isInvalidPath(parsePath(path), pathData) ? undefined : pathData.value;
 	}
 
 	const exists = traversePath(obj, path, options.modifier);
@@ -51,48 +63,15 @@ export function traversePath<T extends object>(
 	realPath: (string | number | symbol)[],
 	modifier?: (data: PathData) => undefined | unknown | void
 ): PathData | undefined {
+	// Empty paths have no node in the legacy traversal contract.
 	if (!realPath.length) return undefined;
 
-	// Prevent prototype injection
-	if (realPath.includes('__proto__') || realPath.includes('prototype')) {
-		throw new Error("Cannot set an object's `__proto__` or `prototype` property");
-	}
+	const path: TypedPath = parsePath(realPath);
+	const adaptedModifier = modifier
+		? (node: PathNode) => modifier(toData(node) as PathData)
+		: undefined;
 
-	const path = [realPath[0]];
-
-	let parent = obj;
-
-	while (parent && path.length < realPath.length) {
-		const key = path[path.length - 1] as keyof typeof parent;
-
-		const value = modifier
-			? modifier({
-					parent,
-					key: String(key),
-					value: parent[key],
-					path: path.map((p) => String(p)),
-					isLeaf: false,
-					set: (v) => setPath(parent, key, v)
-				})
-			: parent[key];
-
-		if (value === undefined) return undefined;
-		else parent = value as T;
-
-		path.push(realPath[path.length]);
-	}
-
-	if (!parent) return undefined;
-
-	const key = realPath[realPath.length - 1];
-	return {
-		parent,
-		key: String(key),
-		value: parent[key as keyof typeof parent],
-		path: realPath.map((p) => String(p)),
-		isLeaf: true,
-		set: (v) => setPath(parent, key as keyof typeof parent, v)
-	};
+	return toData(getPathNode(obj, path, adaptedModifier));
 }
 
 type TraverseStatus = 'abort' | 'skip' | unknown | void;
@@ -112,7 +91,14 @@ export function traversePaths<T extends object>(
 			value,
 			path: path.concat([key]), // path.map(String).concat([key])
 			isLeaf,
-			set: (v) => setPath(parent, key, v)
+			set: (v) => {
+				// Prevent prototype injection
+				if (key === '__proto__' || key === 'prototype') {
+					throw new Error("Cannot set an object's `__proto__` or `prototype` property");
+				}
+				parent[key] = v;
+				return 'skip';
+			}
 		};
 
 		const status = modifier(pathData);
@@ -155,7 +141,7 @@ export function comparePaths(newObj: unknown, oldObj: unknown) {
 
 		function addDiff() {
 			//console.log('Diff', data.path);
-			diffPaths.set(data.path.join(' '), data.path);
+			diffPaths.set(pathKey(data.path), data.path);
 			return 'skip';
 		}
 
@@ -190,23 +176,13 @@ export function setPaths(
 		| null
 		| undefined
 ) {
-	const isFunction = typeof value === 'function';
-
-	for (const path of paths) {
-		const leaf = traversePath(obj, path, ({ parent, key, value }) => {
-			if (value === undefined || typeof value !== 'object') {
-				// If a previous check tainted the node, but the search goes deeper,
-				// so it needs to be replaced with a (parent) node
-				parent[key] = {};
-			}
-			return parent[key];
-		});
-		if (leaf) {
-			// Prevent prototype injection
-			if (leaf.key === '__proto__' || leaf.key === 'prototype') {
-				throw new Error("Cannot set an object's `__proto__` or `prototype` property");
-			}
-			leaf.parent[leaf.key] = isFunction ? value(path, leaf) : value;
-		}
+	if (typeof value !== 'function') {
+		setPathNodes(obj, paths, value);
+		return;
 	}
+
+	setPathNodes(obj, paths, (typedPath, node) => {
+		const data = toData(node) as PathData;
+		return value(typedPath.map((segment) => String(segment)), data);
+	});
 }

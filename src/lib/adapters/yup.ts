@@ -8,7 +8,7 @@ import {
 	type ClientValidationAdapter
 } from './adapters.js';
 import type { AnySchema, Schema } from 'yup';
-import { splitPath } from '$lib/stringPath.js';
+import { parsePath } from '$lib/pathModel.js';
 import { memoize } from '$lib/memoize.js';
 import { convertSchema } from './yup-to-json-schema/index.js';
 
@@ -47,7 +47,7 @@ async function validate<T extends Schema>(
 			success: false,
 			issues: error.inner.map((error) => ({
 				message: error.message,
-				path: error.path !== null && error.path !== undefined ? splitPath(error.path) : undefined
+				path: error.path !== null && error.path !== undefined ? parsePath(error.path) : undefined
 			}))
 		};
 	}
