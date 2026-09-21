@@ -4,6 +4,13 @@ import type { InputConstraint } from '../jsonSchema/constraints.js';
 import { SuperFormError } from '$lib/errors.js';
 import { pathExists, traversePath } from '../traversal.js';
 import { splitPath, type FormPath, type FormPathLeaves, type FormPathType } from '../stringPath.js';
+import {
+	detectArrayChange,
+	formatPath,
+	parsePath,
+	remapArrayNode,
+	toPropertyKeys
+} from '../pathModel.js';
 import type { FormPathArrays } from '../stringPath.js';
 import type { SuperForm, TaintOption } from './superForm.js';
 import type { IsAny, Prettify } from '$lib/utils.js';
@@ -473,15 +480,33 @@ export function arrayProxy<
 
 	const values = superFieldProxy(superForm, path, options);
 
-	// If array is shortened, delete all keys above length
-	// in errors, so they won't be kept if the array is lengthened again.
-	let lastLength = Array.isArray(get(values)) ? (get(values) as unknown[]).length : 0;
+	// When array elements are removed, migrate the associated error paths
+	// by element identity (detected as a contiguous removal), so errors
+	// keep pointing at the same element. If the change is ambiguous, fall
+	// back to the previous contract: delete all keys above the new length,
+	// so they won't be kept if the array is lengthened again.
+	const arrayPath = parsePath(path);
+	let lastValues = Array.isArray(get(values)) ? (get(values) as unknown[]) : [];
 	values.subscribe(($values) => {
-		const currentLength = Array.isArray($values) ? $values.length : 0;
-		if (currentLength < lastLength) {
+		const currentValues: unknown[] = Array.isArray($values) ? ($values as unknown[]) : [];
+		const change = detectArrayChange(lastValues, currentValues);
+		const currentLength = currentValues.length;
+		const lastLength = lastValues.length;
+
+		if (change?.type === 'remove') {
 			superForm.errors.update(
 				($errors) => {
-					const node = pathExists($errors, splitPath(path));
+					const node = pathExists($errors, toPropertyKeys(arrayPath));
+					if (!node || node.value === null || typeof node.value !== 'object') return $errors;
+					node.parent[node.key] = remapArrayNode(node.value, change);
+					return $errors;
+				},
+				{ force: true }
+			);
+		} else if (currentLength < lastLength) {
+			superForm.errors.update(
+				($errors) => {
+					const node = pathExists($errors, toPropertyKeys(arrayPath));
 					if (!node) return $errors;
 					for (const key in node.value) {
 						if (Number(key) < currentLength) continue;
@@ -492,7 +517,7 @@ export function arrayProxy<
 				{ force: true }
 			);
 		}
-		lastLength = currentLength;
+		lastValues = currentValues;
 	});
 
 	return {
@@ -524,7 +549,7 @@ export function formFieldProxy<
 ): FormFieldProxy<PathType<Type, T, Path>, Path> {
 	const path2 = splitPath(path);
 	// Filter out array indices, the constraints structure doesn't contain these.
-	const constraintsPath = path2.filter((p) => /\D/.test(String(p))).join('.');
+	const constraintsPath = formatPath(parsePath(path).filter((seg) => seg.kind === 'key'));
 
 	const taintedProxy = derived<typeof superForm.tainted, boolean | undefined>(
 		superForm.tainted,

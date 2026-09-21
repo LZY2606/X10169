@@ -1,24 +1,25 @@
+import { fromPropertyKeys, parsePath, toPropertyKeys, formatPath } from './pathModel.js';
 import type { AllKeys, IsAny, MergeUnion } from './utils.js';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
+/**
+ * Split a string path into property keys. Delegates to the internal
+ * typed path model (see `pathModel.ts`), so every consumer shares the
+ * same parsing rules, including the quoted escape form for keys with
+ * special characters.
+ */
 export function splitPath(path: string) {
-	return path
-		.toString()
-		.split(/[[\].]+/)
-		.filter((p) => p);
+	return toPropertyKeys(parsePath(path));
 }
 
+/**
+ * Merge property keys into a string path. Delegates to the internal
+ * typed path model; keys containing special characters are emitted in
+ * the quoted escape form so the result parses back losslessly.
+ */
 export function mergePath(path: (string | number | symbol)[]) {
-	return path.reduce((acc: string, next) => {
-		const key = String(next);
-		if (typeof next === 'number' || /^\d+$/.test(key)) acc += `[${key}]`;
-		else if (!acc) acc += key;
-		else acc += `.${key}`;
-
-		return acc;
-	}, '');
+	return formatPath(fromPropertyKeys(path));
 }
-
 type DictOrArray = Record<PropertyKey, unknown> | unknown[];
 
 /**

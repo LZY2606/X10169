@@ -22,6 +22,7 @@ import {
 	type FormPath,
 	type FormPathLeaves
 } from '$lib/stringPath.js';
+import { formatPath, fromPropertyKeys, pathEquals } from '$lib/pathModel.js';
 import { beforeNavigate, goto, invalidateAll } from '$app/navigation';
 import { SuperFormError, flattenErrors, mapErrors, updateErrors } from '$lib/errors.js';
 import { cancelFlash, shouldSyncFlash } from './flash.js';
@@ -857,12 +858,14 @@ export function superForm<
 		traversePaths(errors, (error) => {
 			if (!Array.isArray(error.value)) return;
 
-			const currentPath = [...error.path];
-			if (currentPath[currentPath.length - 1] == '_errors') {
-				currentPath.pop();
+			const currentPath = fromPropertyKeys(error.path);
+			let objectPath = currentPath;
+			const lastSegment = currentPath[currentPath.length - 1];
+			if (lastSegment && lastSegment.kind === 'key' && lastSegment.key === '_errors') {
+				objectPath = currentPath.slice(0, -1);
 			}
 
-			const joinedPath = currentPath.join('.');
+			const joinedPath = formatPath(objectPath);
 
 			const lastPath = error.path[error.path.length - 1];
 			const isObjectError = lastPath == '_errors';
@@ -872,8 +875,10 @@ export function superForm<
 				paths.some((path) => {
 					// If array/object, any part of the path can match. If not, exact match is required
 					return isObjectError
-						? currentPath && path && currentPath.length > 0 && currentPath[0] == path[0]
-						: joinedPath == path.join('.');
+						? objectPath.length > 0 &&
+								path.length > 0 &&
+								pathEquals(objectPath.slice(0, 1), fromPropertyKeys(path).slice(0, 1))
+						: pathEquals(objectPath, fromPropertyKeys(path));
 				});
 
 			function addError() {
@@ -990,12 +995,15 @@ export function superForm<
 		return {
 			valid: Data.valid,
 			posted: Data.posted,
-			errors: Data.errors,
-			data,
+			// Clone the mutable structures, so later store updates (which
+			// mutate errors, tainted and form data in place) cannot corrupt
+			// the captured snapshot before it is restored.
+			errors: clone(Data.errors) ?? {},
+			data: data === Data.form ? clone(data) : data,
 			constraints: Data.constraints,
 			message: Data.message,
 			id: Data.formId,
-			tainted,
+			tainted: tainted === Data.tainted ? clone(tainted) : tainted,
 			shape: Data.shape
 		};
 	}
@@ -1313,7 +1321,9 @@ export function superForm<
 
 		const paths = comparePaths(newData, Data.form);
 		//console.log('paths:', JSON.stringify(paths));
-		const newTainted = comparePaths(newData, Tainted.clean).map((path) => path.join());
+		const newTainted = new Set(
+			comparePaths(newData, Tainted.clean).map((path) => formatPath(fromPropertyKeys(path)))
+		);
 		//console.log('newTainted:', JSON.stringify(newTainted));
 
 		if (paths.length) {
@@ -1322,7 +1332,7 @@ export function superForm<
 
 				setPaths(currentlyTainted, paths, (path, data) => {
 					// If value goes back to the clean value, untaint the path
-					if (!newTainted.includes(path.join())) return undefined;
+					if (!newTainted.has(formatPath(fromPropertyKeys(path)))) return undefined;
 
 					const currentValue = traversePath(newData, path);
 					const cleanPath = traversePath(Tainted.clean, path);
@@ -1461,7 +1471,10 @@ export function superForm<
 		const message = opts.message ?? form.message;
 
 		if (opts.untaint || opts.resetted) {
-			Tainted_set(typeof opts.untaint === 'boolean' ? undefined : opts.untaint, form.data);
+			// Clone a restored tainted state, so later tainted updates
+			// (which mutate the state in place) cannot corrupt the
+			// snapshot it was restored from.
+			Tainted_set(typeof opts.untaint === 'boolean' ? undefined : clone(opts.untaint), form.data);
 		}
 
 		// Form data is not tainted when rebinding.

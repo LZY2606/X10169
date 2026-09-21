@@ -5,6 +5,17 @@ Headlines: Added, Changed, Deprecated, Removed, Fixed, Security
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Internal typed path model (`src/lib/pathModel.ts`) that all field-path handling now converges on: server errors, client validation, tainted, constraints, proxies and snapshot restore share a single representation that distinguishes object keys from array indices. Keys containing special characters (dots, brackets, quotes) can be expressed with a quoted escape form, e.g. `meta["weird.key"]`, round-tripping losslessly through `splitPath`/`mergePath`.
+
+### Fixed
+
+- `arrayProxy` now migrates errors by element identity when array elements are removed from the middle, instead of only truncating errors past the new array length, so errors keep pointing at the same element.
+- `capture()` now returns a snapshot decoupled from the live stores, so subsequent form updates can no longer corrupt a captured snapshot's `data`, `errors` or `tainted` before `restore()` is called.
+
 ## [2.30.2] - 2026-07-04
 
 ### Security
