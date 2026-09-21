@@ -1,6 +1,6 @@
 import type { SchemaShape } from './jsonSchema/schemaShape.js';
 import { pathExists, setPaths, traversePath, traversePaths, type PathData } from './traversal.js';
-import { mergePath } from './stringPath.js';
+import { formatPath, normalizePath } from './pathModel.js';
 import type { ValidationErrors } from './superValidate.js';
 import { defaultTypes, defaultValue, type SchemaFieldType } from './jsonSchema/schemaDefaults.js';
 import type { JSONSchema } from './jsonSchema/index.js';
@@ -43,26 +43,30 @@ export function mapErrors(errors: ValidationIssue[], shape: SchemaShape) {
 	}
 
 	for (const error of errors) {
+		// Normalize once: numeric strings from adapters become typed array indices.
+		const path = error.path ? normalizePath(error.path) : undefined;
+
 		// Form-level error
-		if (!error.path || (error.path.length == 1 && !error.path[0])) {
+		if (!path || (path.length == 1 && !path[0])) {
 			addFormLevelError(error);
 			continue;
 		}
 
 		// Path must filter away number indices, since the object shape doesn't contain these.
 		// Except the last, since otherwise any error in an array will count as an object error.
-		const isLastIndexNumeric = /^\d$/.test(String(error.path[error.path.length - 1]));
+		const lastSegment = path[path.length - 1];
+		const isLastIndexNumeric = typeof lastSegment === 'number';
 
 		const objectError =
 			!isLastIndexNumeric &&
 			pathExists(
 				shape,
-				error.path.filter((p) => /\D/.test(String(p)))
+				path.filter((p) => typeof p !== 'number')
 			)?.value;
 
-		//console.log(error.path, error.message, objectError ? '[OBJ]' : '');
+		//console.log(path, error.message, objectError ? '[OBJ]' : '');
 
-		const leaf = traversePath(output, error.path, ({ value, parent, key }) => {
+		const leaf = traversePath(output, path, ({ value, parent, key }) => {
 			if (value === undefined) parent[key] = {};
 			return parent[key];
 		});
@@ -127,7 +131,7 @@ function _flattenErrors(
 		.flatMap(([key, messages]) => {
 			if (Array.isArray(messages) && messages.length > 0) {
 				const currPath = path.concat([key]);
-				return { path: mergePath(currPath), messages };
+				return { path: formatPath(currPath.map((p) => (/^\d+$/.test(p) ? Number(p) : p))), messages };
 			} else {
 				return _flattenErrors(
 					errors[key] as unknown as ValidationErrors<Record<string, unknown>>,
@@ -237,7 +241,7 @@ export function replaceInvalidDefaults<T extends Record<string, unknown>>(
 
 			Defaults_traverseAndReplace(
 				{
-					path: error.path,
+					path: normalizePath(error.path),
 					value: pathExists(Defaults, error.path)?.value
 				},
 				true

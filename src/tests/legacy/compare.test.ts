@@ -97,7 +97,7 @@ describe('Path comparisons', () => {
 		expect(comparePaths(obj1, obj2)).toStrictEqual([
 			['name'],
 			['deep', 'test'],
-			['tags', '1', 'name']
+			['tags', 1, 'name']
 		]);
 	});
 
@@ -126,7 +126,7 @@ describe('Path comparisons', () => {
 			scoops: 1
 		};
 
-		expect(comparePaths(obj1, obj2)).toStrictEqual([['flavours', '0']]);
+		expect(comparePaths(obj1, obj2)).toStrictEqual([['flavours', 0]]);
 	});
 
 	test('Paths with different array values', () => {
@@ -148,8 +148,8 @@ describe('Path comparisons', () => {
 		};
 
 		expect(comparePaths(obj1, obj2)).toStrictEqual([
-			['flavours', '0'],
-			['flavours', '1']
+			['flavours', 0],
+			['flavours', 1]
 		]);
 	});
 
@@ -176,8 +176,8 @@ describe('Path comparisons', () => {
 			images: []
 		};
 
-		expect(comparePaths(obj1, obj2)).toStrictEqual([['images', '0']]);
-		expect(comparePaths(obj2, obj1)).toStrictEqual([['images', '0']]);
+		expect(comparePaths(obj1, obj2)).toStrictEqual([['images', 0]]);
+		expect(comparePaths(obj2, obj1)).toStrictEqual([['images', 0]]);
 	});
 });
 

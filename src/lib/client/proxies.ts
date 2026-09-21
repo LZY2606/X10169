@@ -3,7 +3,8 @@ import { derived, get, writable, type Readable, type Updater, type Writable } fr
 import type { InputConstraint } from '../jsonSchema/constraints.js';
 import { SuperFormError } from '$lib/errors.js';
 import { pathExists, traversePath } from '../traversal.js';
-import { splitPath, type FormPath, type FormPathLeaves, type FormPathType } from '../stringPath.js';
+import { formatPath, migrateMetadataNode, parsePath, stableIndexMap } from '../pathModel.js';
+import { type FormPath, type FormPathLeaves, type FormPathType } from '../stringPath.js';
 import type { FormPathArrays } from '../stringPath.js';
 import type { SuperForm, TaintOption } from './superForm.js';
 import type { IsAny, Prettify } from '$lib/utils.js';
@@ -433,6 +434,7 @@ export function arrayProxy<
 	path: Path,
 	options?: { taint?: TaintOption }
 ): ArrayProxy<FormPathType<T, Path> extends (infer U)[] ? U : never, Path> {
+	const segments = parsePath(path);
 	const formErrors = fieldProxy(superForm.errors, `${path}` as any);
 
 	const onlyFieldErrors = derived<typeof formErrors, ValueErrors>(formErrors, ($errors) => {
@@ -473,26 +475,30 @@ export function arrayProxy<
 
 	const values = superFieldProxy(superForm, path, options);
 
-	// If array is shortened, delete all keys above length
-	// in errors, so they won't be kept if the array is lengthened again.
-	let lastLength = Array.isArray(get(values)) ? (get(values) as unknown[]).length : 0;
+	// If the array changes length, migrate item errors with the shared typed
+	// path model instead of deleting by index string.
+	let lastArray: unknown[] = Array.isArray(get(values))
+		? [...(get(values) as unknown[])]
+		: [];
 	values.subscribe(($values) => {
-		const currentLength = Array.isArray($values) ? $values.length : 0;
-		if (currentLength < lastLength) {
+		const currentArray: unknown[] = Array.isArray($values) ? $values : [];
+		if (currentArray.length !== lastArray.length) {
+			const previous = lastArray;
 			superForm.errors.update(
 				($errors) => {
-					const node = pathExists($errors, splitPath(path));
-					if (!node) return $errors;
-					for (const key in node.value) {
-						if (Number(key) < currentLength) continue;
-						delete node.value[key];
-					}
+					const node = pathExists($errors, segments);
+					if (!node || !node.value || typeof node.value !== 'object') return $errors;
+					const migrated = migrateMetadataNode(
+						node.value as Record<string, unknown>,
+						stableIndexMap(previous, currentArray)
+					);
+					node.parent[node.key] = migrated;
 					return $errors;
 				},
 				{ force: true }
 			);
 		}
-		lastLength = currentLength;
+		lastArray = [...currentArray];
 	});
 
 	return {
@@ -522,9 +528,10 @@ export function formFieldProxy<
 	path: Path,
 	options?: ProxyOptions
 ): FormFieldProxy<PathType<Type, T, Path>, Path> {
-	const path2 = splitPath(path);
+	const path2 = parsePath(path);
+	const segments = path2;
 	// Filter out array indices, the constraints structure doesn't contain these.
-	const constraintsPath = path2.filter((p) => /\D/.test(String(p))).join('.');
+	const constraintsPath = formatPath(segments.filter((p) => typeof p !== 'number'));
 
 	const taintedProxy = derived<typeof superForm.tainted, boolean | undefined>(
 		superForm.tainted,
@@ -600,7 +607,8 @@ function superFieldProxy<T extends Record<string, unknown>, Path extends string,
 	baseOptions?: ProxyOptions
 ): SuperFieldProxy<PathType<Type, T, Path>> {
 	const form = superForm.form;
-	const path2 = splitPath(path);
+	const segments = parsePath(path);
+	const path2 = segments;
 
 	const proxy = derived(form, ($form: object) => {
 		const data = traversePath($form, path2);
@@ -647,7 +655,8 @@ export function fieldProxy<
 	path: Path,
 	options?: ProxyOptions
 ): FieldProxy<PathType<Type, T, Path>> {
-	const path2 = splitPath(path);
+	const segments = parsePath(path);
+	const path2 = segments;
 
 	if (isSuperForm(form, options)) {
 		return superFieldProxy(form, path, options);

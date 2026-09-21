@@ -16,12 +16,18 @@ import { browser } from '$app/environment';
 import { onDestroy, tick } from 'svelte';
 import { comparePaths, pathExists, setPaths, traversePath, traversePaths } from '$lib/traversal.js';
 import {
-	splitPath,
 	type FormPathType,
-	mergePath,
 	type FormPath,
 	type FormPathLeaves
 } from '$lib/stringPath.js';
+import {
+	formatPath,
+	migrateMetadataTree,
+	parsePath,
+	pathId,
+	samePath,
+	type PathSegment
+} from '$lib/pathModel.js';
 import { beforeNavigate, goto, invalidateAll } from '$app/navigation';
 import { SuperFormError, flattenErrors, mapErrors, updateErrors } from '$lib/errors.js';
 import { cancelFlash, shouldSyncFlash } from './flash.js';
@@ -326,7 +332,7 @@ export type ChangeEvent<T extends Record<string, unknown>> =
 	  };
 
 type FullChangeEvent = {
-	paths: (string | number | symbol)[][];
+	paths: PathSegment[][];
 	immediate?: boolean;
 	multiple?: boolean;
 	type?: 'input' | 'blur';
@@ -733,7 +739,7 @@ export function superForm<
 		if (!options.onChange || !event.paths.length || event.type == 'blur') return;
 
 		let changeEvent: ChangeEvent<T>;
-		const paths = event.paths.map(mergePath) as FormPath<T>[];
+		const paths = event.paths.map((typedPath) => formatPath(typedPath)) as FormPath<T>[];
 
 		if (
 			event.type &&
@@ -857,28 +863,32 @@ export function superForm<
 		traversePaths(errors, (error) => {
 			if (!Array.isArray(error.value)) return;
 
-			const currentPath = [...error.path];
+			const errorSegments = error.segments;
+			const currentPath = [...errorSegments];
 			if (currentPath[currentPath.length - 1] == '_errors') {
 				currentPath.pop();
 			}
 
-			const joinedPath = currentPath.join('.');
+			const joinedPath = formatPath(currentPath);
 
-			const lastPath = error.path[error.path.length - 1];
+			const lastPath = errorSegments[errorSegments.length - 1];
 			const isObjectError = lastPath == '_errors';
 
 			const isEventError =
 				error.value &&
-				paths.some((path) => {
+				paths.some((eventPath) => {
 					// If array/object, any part of the path can match. If not, exact match is required
 					return isObjectError
-						? currentPath && path && currentPath.length > 0 && currentPath[0] == path[0]
-						: joinedPath == path.join('.');
+						? currentPath &&
+								eventPath &&
+								currentPath.length > 0 &&
+								samePath([currentPath[0]], [eventPath[0]])
+						: samePath(currentPath, eventPath);
 				});
 
 			function addError() {
 				//console.log('Adding error', `[${error.path.join('.')}]`, error.value); //debug
-				setPaths(output, [error.path], error.value);
+				setPaths(output, [errorSegments], error.value);
 
 				if (options.customValidity && isEventError && validity.has(joinedPath)) {
 					const { el, message } = validity.get(joinedPath)!;
@@ -902,7 +912,7 @@ export function superForm<
 			// or if any error has existed previously. Tricky UX.
 			if (multiple) {
 				// For multi-select, if any error has existed, display all errors
-				const errorPath = pathExists(get(Errors), error.path.slice(0, -1));
+				const errorPath = pathExists(get(Errors), errorSegments.slice(0, -1));
 				if (errorPath?.value && typeof errorPath?.value == 'object') {
 					for (const errors of Object.values(errorPath.value)) {
 						if (Array.isArray(errors)) {
@@ -913,7 +923,7 @@ export function superForm<
 			}
 
 			// If previous error exist, always display
-			const previousError = pathExists(previous, error.path);
+			const previousError = pathExists(previous, errorSegments);
 			if (previousError && previousError.key in previousError.parent) {
 				return addError();
 			}
@@ -924,7 +934,7 @@ export function superForm<
 				if (
 					options.validationMethod == 'oninput' ||
 					(type == 'blur' &&
-						Tainted_hasBeenTainted(mergePath(error.path.slice(0, -1)) as FormPath<T>))
+						Tainted_hasBeenTainted(formatPath(errorSegments.slice(0, -1)) as FormPath<T>))
 				) {
 					return addError();
 				}
@@ -934,8 +944,7 @@ export function superForm<
 				if (
 					type == 'blur' &&
 					isEventError
-					//|| (isErrorInArray &&	Tainted_hasBeenTainted(mergePath(error.path.slice(0, -1)) as FormPath<T>))
-				) {
+								) {
 					return addError();
 				}
 			}
@@ -953,9 +962,9 @@ export function superForm<
 					(!browser || !(info.parent instanceof FileList)) &&
 					(info.value instanceof File || (browser && info.value instanceof FileList))
 				) {
-					const dataPath = pathExists(data, info.path);
+					const dataPath = pathExists(data, info.segments);
 					if (!dataPath || !(dataPath.key in dataPath.parent)) {
-						setPaths(data, [info.path], info.value);
+						setPaths(data, [info.segments], info.value);
 					}
 				}
 			});
@@ -1274,7 +1283,7 @@ export function superForm<
 	function Tainted_hasBeenTainted(path?: FormPath<T>): boolean {
 		if (!Data.tainted) return false;
 		if (!path) return !!Data.tainted;
-		const field = pathExists(Data.tainted, splitPath(path));
+		const field = pathExists(Data.tainted, parsePath(path));
 		return !!field && field.key in field.parent;
 	}
 
@@ -1287,7 +1296,7 @@ export function superForm<
 		if (typeof path === 'object') return Tainted__isObjectTainted(path);
 		if (!Data.tainted || path === undefined) return false;
 
-		const field = pathExists(Data.tainted, splitPath(path));
+		const field = pathExists(Data.tainted, parsePath(path));
 		return Tainted__isObjectTainted(field?.value);
 	}
 
@@ -1313,20 +1322,35 @@ export function superForm<
 
 		const paths = comparePaths(newData, Data.form);
 		//console.log('paths:', JSON.stringify(paths));
-		const newTainted = comparePaths(newData, Tainted.clean).map((path) => path.join());
-		//console.log('newTainted:', JSON.stringify(newTainted));
+		const newTaintedIds = new Set(comparePaths(newData, Tainted.clean).map(pathId));
+		const hasArrayChange = paths.some((path) =>
+			path.some((segment) => typeof segment === 'number')
+		);
+		//console.log('newTainted:', JSON.stringify([...newTaintedIds]));
 
 		if (paths.length) {
 			Tainted.state.update((currentlyTainted) => {
 				if (!currentlyTainted) currentlyTainted = {};
 
+				// Migrate tainted metadata along inserted/deleted array elements,
+				// keyed by element identity with positional stability, so errors
+				// and tainted state never disagree about an array item.
+				if (hasArrayChange) {
+					currentlyTainted = migrateMetadataTree(
+						currentlyTainted,
+						Data.form,
+						newData
+					) as TaintedFields<T>;
+				}
+
 				setPaths(currentlyTainted, paths, (path, data) => {
 					// If value goes back to the clean value, untaint the path
-					if (!newTainted.includes(path.join())) return undefined;
+					if (!newTaintedIds.has(pathId(path))) return undefined;
 
 					const currentValue = traversePath(newData, path);
 					const cleanPath = traversePath(Tainted.clean, path);
-					const identical = currentValue && cleanPath && currentValue.value === cleanPath.value;
+					const identical =
+						currentValue && cleanPath && currentValue.value === cleanPath.value;
 
 					const output = identical
 						? undefined
@@ -1341,6 +1365,13 @@ export function superForm<
 
 				return currentlyTainted;
 			});
+
+			// Keep server/client errors aligned with the same array migration.
+			if (hasArrayChange) {
+				_errors.update((currentErrors) => {
+					return migrateMetadataTree(currentErrors, Data.form, newData) as ValidationErrors<T>;
+				});
+			}
 
 			NextChange_setHtmlEvent({ paths });
 		}
@@ -1882,7 +1913,7 @@ export function superForm<
 						// Will be reassembled in superValidate.
 						traversePaths(postData, (data) => {
 							if (data.value instanceof File) {
-								const key = '__superform_file_' + mergePath(data.path);
+								const key = '__superform_file_' + formatPath(data.segments);
 								submitData.append(key, data.value);
 								return data.set(undefined);
 							} else if (
@@ -1890,7 +1921,7 @@ export function superForm<
 								data.value.length &&
 								data.value.every((v) => v instanceof File)
 							) {
-								const key = '__superform_files_' + mergePath(data.path);
+								const key = '__superform_files_' + formatPath(data.segments);
 								for (const file of data.value) {
 									submitData.append(key, file);
 								}
@@ -2141,14 +2172,14 @@ export function superForm<
 
 		traversePaths(formData, (data) => {
 			if (data.value instanceof File) {
-				paths.push(data.path);
+				paths.push(data.segments);
 				return 'skip';
 			} else if (
 				Array.isArray(data.value) &&
 				data.value.length &&
 				data.value.every((d) => d instanceof File)
 			) {
-				paths.push(data.path);
+				paths.push(data.segments);
 				return 'skip';
 			}
 		});
@@ -2192,7 +2223,7 @@ export function superForm<
 			if (typeof opts.errors == 'string') opts.errors = [opts.errors];
 
 			let data: T;
-			const splittedPath = splitPath(path);
+			const splittedPath = parsePath(path);
 
 			if ('value' in opts) {
 				if (opts.update === true || opts.update === 'value') {

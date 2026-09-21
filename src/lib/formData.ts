@@ -4,7 +4,7 @@ import { SchemaError, SuperFormError } from './errors.js';
 import type { JSONSchema } from './index.js';
 import { defaultValues } from './jsonSchema/schemaDefaults.js';
 import { schemaInfo, type SchemaInfo, type SchemaType } from './jsonSchema/schemaInfo.js';
-import { splitPath } from './stringPath.js';
+import { parsePath } from './pathModel.js';
 import type { SuperValidateOptions } from './superValidate.js';
 import { setPaths } from './traversal.js';
 import { assertSchema } from './utils.js';
@@ -26,6 +26,9 @@ type ParsedData = {
 	posted: boolean;
 	data: Record<string, unknown> | null | undefined;
 };
+
+const FILE_KEY_PREFIX = '__superform_file_';
+const FILES_KEY_PREFIX = '__superform_files_';
 
 const unionError =
 	'FormData parsing failed: Unions are only supported when the dataType option for superForm is set to "json".';
@@ -157,15 +160,15 @@ export function parseFormData<T extends Record<string, unknown>>(
 					const filePaths = Array.from(formData.keys());
 
 					for (const path of filePaths.filter((path) => path.startsWith('__superform_file_'))) {
-						const realPath = splitPath(path.substring(17));
-						setPaths(output, [realPath], formData.get(path));
+						const realPath = parsePath(path.substring(FILE_KEY_PREFIX.length));
+						setPaths(output, [realPath], formData.get(path), { mode: 'auto' });
 					}
 
 					for (const path of filePaths.filter((path) => path.startsWith('__superform_files_'))) {
-						const realPath = splitPath(path.substring(18));
+						const realPath = parsePath(path.substring(FILES_KEY_PREFIX.length));
 						const allFiles = formData.getAll(path);
 
-						setPaths(output, [realPath], Array.from(allFiles));
+						setPaths(output, [realPath], Array.from(allFiles), { mode: 'auto' });
 					}
 
 					return output as Record<string, unknown>;

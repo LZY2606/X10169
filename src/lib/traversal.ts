@@ -1,29 +1,58 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import {
+	ensureNode,
+	formatPath,
+	isForbiddenKey,
+	locateNode,
+	normalizePath,
+	type PathSegment,
+	samePath
+} from './pathModel.js';
+
+export type { PathSegment, TypedPath } from './pathModel.js';
 
 export type PathData = {
 	parent: any;
 	key: string;
 	value: any;
+	/** Typed segments; array indices are numbers, object keys are strings. */
+	segments: PathSegment[];
+	/** Stringified version of `segments`, kept for backward compatibility. */
 	path: (string | number | symbol)[];
 	isLeaf: boolean;
 	set: (value: any) => 'skip';
 };
 
-function setPath<T extends object>(parent: T, key: keyof T, value: any) {
+function setPath<T extends object>(parent: T, key: PropertyKey, value: any) {
 	// Prevent prototype injection
-	if (key === '__proto__' || key === 'prototype') {
+	if (isForbiddenKey(key)) {
 		throw new Error("Cannot set an object's `__proto__` or `prototype` property");
 	}
 
-	parent[key] = value;
+	(parent as Record<PropertyKey, unknown>)[key as string] = value;
 	return 'skip' as const;
 }
 
-function isInvalidPath(originalPath: (string | number | symbol)[], pathData: PathData) {
+function toPathData(node: { parent: any; key: string; index: number | string; value: any; exists: boolean },
+	segments: PathSegment[],
+	isLeaf: boolean
+): PathData {
+	return {
+		parent: node.parent,
+		key: node.key,
+		value: node.value,
+		segments,
+		path: segments.map(String),
+		isLeaf,
+		set: (v) => setPath(node.parent, node.index, v)
+	};
+}
+
+function isInvalidPath(segments: PathSegment[], pathData: PathData) {
 	return (
 		pathData.value !== undefined &&
 		typeof pathData.value !== 'object' &&
-		pathData.path.length < originalPath.length
+		pathData.segments.length < segments.length
 	);
 }
 
@@ -36,7 +65,8 @@ export function pathExists<T extends object>(
 	} = {}
 ): PathData | undefined {
 	if (!options.modifier) {
-		options.modifier = (pathData) => (isInvalidPath(path, pathData) ? undefined : pathData.value);
+		options.modifier = (pathData) =>
+			isInvalidPath(normalizePath(path), pathData) ? undefined : pathData.value;
 	}
 
 	const exists = traversePath(obj, path, options.modifier);
@@ -51,47 +81,46 @@ export function traversePath<T extends object>(
 	realPath: (string | number | symbol)[],
 	modifier?: (data: PathData) => undefined | unknown | void
 ): PathData | undefined {
-	if (!realPath.length) return undefined;
+	const segments = normalizePath(realPath);
+	if (!segments.length) return undefined;
 
-	// Prevent prototype injection
-	if (realPath.includes('__proto__') || realPath.includes('prototype')) {
+	if (segments.some((segment) => isForbiddenKey(segment))) {
 		throw new Error("Cannot set an object's `__proto__` or `prototype` property");
 	}
 
-	const path = [realPath[0]];
+	let parent: any = obj;
 
-	let parent = obj;
-
-	while (parent && path.length < realPath.length) {
-		const key = path[path.length - 1] as keyof typeof parent;
+	for (let i = 0; i < segments.length - 1; i++) {
+		const segment = segments[i];
+		const key = Array.isArray(parent) && typeof segment === 'number' ? segment : String(segment);
 
 		const value = modifier
 			? modifier({
 					parent,
 					key: String(key),
 					value: parent[key],
-					path: path.map((p) => String(p)),
+					segments: segments.slice(0, i + 1),
+					path: segments.slice(0, i + 1).map(String),
 					isLeaf: false,
 					set: (v) => setPath(parent, key, v)
 				})
 			: parent[key];
 
 		if (value === undefined) return undefined;
-		else parent = value as T;
-
-		path.push(realPath[path.length]);
+		parent = value;
 	}
 
-	if (!parent) return undefined;
+	const last = segments[segments.length - 1];
+	const lastKey = Array.isArray(parent) && typeof last === 'number' ? last : String(last);
 
-	const key = realPath[realPath.length - 1];
 	return {
 		parent,
-		key: String(key),
-		value: parent[key as keyof typeof parent],
-		path: realPath.map((p) => String(p)),
+		key: String(lastKey),
+		value: parent[lastKey],
+		segments,
+		path: segments.map(String),
 		isLeaf: true,
-		set: (v) => setPath(parent, key as keyof typeof parent, v)
+		set: (v) => setPath(parent, lastKey, v)
 	};
 }
 
@@ -100,19 +129,28 @@ type TraverseStatus = 'abort' | 'skip' | unknown | void;
 export function traversePaths<T extends object>(
 	parent: T,
 	modifier: (data: PathData) => TraverseStatus,
-	path: (string | number | symbol)[] = []
+	prefix: PathSegment[] = []
 ): TraverseStatus {
-	for (const key in parent) {
-		const value = parent[key] as any;
+	if (!parent || typeof parent !== 'object') return;
+
+	const keys: string[] = Array.isArray(parent)
+		? parent.map((_, index) => String(index))
+		: Object.keys(parent as object);
+
+	for (const key of keys) {
+		const rawKey: PathSegment = Array.isArray(parent) ? Number(key) : key;
+		const value = (parent as Record<string, unknown>)[key];
 		const isLeaf = value === null || typeof value !== 'object';
+		const segments = normalizePath(prefix.concat(rawKey));
 
 		const pathData: PathData = {
 			parent,
 			key,
 			value,
-			path: path.concat([key]), // path.map(String).concat([key])
+			segments,
+			path: segments.map(String),
 			isLeaf,
-			set: (v) => setPath(parent, key, v)
+			set: (v) => setPath(parent, rawKey, v)
 		};
 
 		const status = modifier(pathData);
@@ -120,7 +158,7 @@ export function traversePaths<T extends object>(
 		if (status === 'abort') return status;
 		else if (status === 'skip') continue;
 		else if (!isLeaf) {
-			const status = traversePaths(value, modifier, pathData.path as any);
+			const status = traversePaths(value as object, modifier, segments);
 			if (status === 'abort') return status;
 		}
 	}
@@ -128,14 +166,14 @@ export function traversePaths<T extends object>(
 
 // Thanks to https://stackoverflow.com/a/31129384/70894
 function eqSet(xs: Set<unknown>, ys: Set<unknown>) {
-	return xs === ys || (xs.size === ys.size && [...xs].every((x) => ys.has(x)));
+	return xs === ys || (xs.size === ys.size && Array.from(xs).every((x) => ys.has(x)));
 }
 
 /**
- * Compare two objects and return the differences as paths.
+ * Compare two objects and return the differences as typed paths.
  */
-export function comparePaths(newObj: unknown, oldObj: unknown) {
-	const diffPaths = new Map<string, (string | number | symbol)[]>();
+export function comparePaths(newObj: unknown, oldObj: unknown): PathSegment[][] {
+	const diffPaths = new Map<string, PathSegment[]>();
 
 	function builtInDiff(one: Date | Set<unknown> | File, other: Date | Set<unknown> | File) {
 		if (one instanceof Date && other instanceof Date && one.getTime() !== other.getTime())
@@ -149,25 +187,23 @@ export function comparePaths(newObj: unknown, oldObj: unknown) {
 		return data instanceof Date || data instanceof Set || data instanceof File;
 	}
 
-	function checkPath(data: PathData, compareTo: object) {
-		const otherData = compareTo ? traversePath(compareTo, data.path) : undefined;
-		//console.log('Compare', data.path, data.value, 'to', otherData?.path, otherData?.value);
+	function addDiff(path: PathSegment[]) {
+		diffPaths.set(path.map((p) => `${typeof p}:${String(p)}`).join('|'), path);
+		return 'skip';
+	}
 
-		function addDiff() {
-			//console.log('Diff', data.path);
-			diffPaths.set(data.path.join(' '), data.path);
-			return 'skip';
-		}
+	function checkPath(data: PathData, compareTo: object) {
+		const otherData = compareTo ? traversePath(compareTo, data.segments) : undefined;
 
 		if (isBuiltin(data.value)) {
 			if (!isBuiltin(otherData?.value) || builtInDiff(data.value, otherData.value)) {
-				return addDiff();
+				return addDiff(data.segments);
 			}
 		}
 
 		if (data.isLeaf) {
 			if (!otherData || data.value !== otherData.value) {
-				addDiff();
+				addDiff(data.segments);
 			}
 		}
 	}
@@ -186,27 +222,36 @@ export function setPaths(
 	paths: (string | number | symbol)[][],
 	value:
 		| NonNullable<unknown>
-		| ((path: (string | number | symbol)[], data: PathData) => unknown)
+		| ((path: PathSegment[], data: PathData) => unknown)
 		| null
-		| undefined
+		| undefined,
+	options?: { mode?: 'object' | 'array' | 'auto' }
 ) {
 	const isFunction = typeof value === 'function';
 
-	for (const path of paths) {
-		const leaf = traversePath(obj, path, ({ parent, key, value }) => {
-			if (value === undefined || typeof value !== 'object') {
-				// If a previous check tainted the node, but the search goes deeper,
-				// so it needs to be replaced with a (parent) node
-				parent[key] = {};
-			}
-			return parent[key];
-		});
-		if (leaf) {
-			// Prevent prototype injection
-			if (leaf.key === '__proto__' || leaf.key === 'prototype') {
-				throw new Error("Cannot set an object's `__proto__` or `prototype` property");
-			}
-			leaf.parent[leaf.key] = isFunction ? value(path, leaf) : value;
+	for (const rawPath of paths) {
+		const path = normalizePath(rawPath);
+		if (!path.length) continue;
+		if (path.some((segment) => isForbiddenKey(segment))) {
+			throw new Error("Cannot set an object's `__proto__` or `prototype` property");
 		}
+
+		const node = ensureNode(obj, path, { mode: options?.mode ?? 'object' });
+
+		if (isForbiddenKey(node.index)) {
+			throw new Error("Cannot set an object's `__proto__` or `prototype` property");
+		}
+
+		const currentData = toPathData(
+			{ ...node, exists: true },
+			path,
+			true
+		);
+
+		node.parent[node.index] = isFunction
+			? (value as (p: PathSegment[], d: PathData) => unknown)(path, currentData)
+			: value;
 	}
 }
+
+export { formatPath as mergePath, samePath };
