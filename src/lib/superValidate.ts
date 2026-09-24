@@ -8,7 +8,8 @@ import {
 import { type ValidationAdapter, type ValidationResult } from './adapters/adapters.js';
 import { parseRequest } from './formData.js';
 import type { ErrorStatus, IsAny } from './utils.js';
-import { splitPath, type FormPathLeavesWithErrors } from './stringPath.js';
+import { parsePath } from './pathModel.js';
+import type { FormPathLeavesWithErrors } from './stringPath.js';
 import type { JSONSchema } from './jsonSchema/index.js';
 import { mapErrors, mergeDefaults, replaceInvalidDefaults } from './errors.js';
 import type { InputConstraints } from './jsonSchema/constraints.js';
@@ -275,7 +276,7 @@ export function setError<
 		if (!form.errors._errors) form.errors._errors = [];
 		form.errors._errors = options.overwrite ? errArr : form.errors._errors.concat(errArr);
 	} else {
-		const realPath = splitPath(path as string);
+		const realPath = parsePath(path as string);
 
 		const leaf = traversePath(form.errors, realPath, ({ parent, key, value }) => {
 			if (value === undefined) parent[key] = {};

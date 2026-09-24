@@ -4,7 +4,7 @@ import { SchemaError, SuperFormError } from './errors.js';
 import type { JSONSchema } from './index.js';
 import { defaultValues } from './jsonSchema/schemaDefaults.js';
 import { schemaInfo, type SchemaInfo, type SchemaType } from './jsonSchema/schemaInfo.js';
-import { splitPath } from './stringPath.js';
+import { parsePath } from './pathModel.js';
 import type { SuperValidateOptions } from './superValidate.js';
 import { setPaths } from './traversal.js';
 import { assertSchema } from './utils.js';
@@ -157,12 +157,12 @@ export function parseFormData<T extends Record<string, unknown>>(
 					const filePaths = Array.from(formData.keys());
 
 					for (const path of filePaths.filter((path) => path.startsWith('__superform_file_'))) {
-						const realPath = splitPath(path.substring(17));
+						const realPath = parsePath(path.substring(17));
 						setPaths(output, [realPath], formData.get(path));
 					}
 
 					for (const path of filePaths.filter((path) => path.startsWith('__superform_files_'))) {
-						const realPath = splitPath(path.substring(18));
+						const realPath = parsePath(path.substring(18));
 						const allFiles = formData.getAll(path);
 
 						setPaths(output, [realPath], Array.from(allFiles));

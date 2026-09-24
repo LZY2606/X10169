@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { assertSafe, formatPath, setPathMutable, toPath, toTokens, type PathInput, type ReadResult } from './pathModel.js';
 
 export type PathData = {
 	parent: any;
@@ -29,17 +30,19 @@ function isInvalidPath(originalPath: (string | number | symbol)[], pathData: Pat
 
 export function pathExists<T extends object>(
 	obj: T,
-	path: (string | number | symbol)[],
+	path: PathInput,
 	options: {
 		value?: (value: unknown) => boolean;
 		modifier?: (data: PathData) => undefined | unknown | void;
 	} = {}
 ): PathData | undefined {
+	const realPath = toTokens(path);
 	if (!options.modifier) {
-		options.modifier = (pathData) => (isInvalidPath(path, pathData) ? undefined : pathData.value);
+		options.modifier = (pathData) =>
+			isInvalidPath(realPath, pathData) ? undefined : pathData.value;
 	}
 
-	const exists = traversePath(obj, path, options.modifier);
+	const exists = traversePath(obj, realPath, options.modifier);
 	if (!exists) return undefined;
 
 	if (options.value === undefined) return exists;
@@ -48,13 +51,21 @@ export function pathExists<T extends object>(
 
 export function traversePath<T extends object>(
 	obj: T,
-	realPath: (string | number | symbol)[],
+	realPathInput: PathInput,
 	modifier?: (data: PathData) => undefined | unknown | void
 ): PathData | undefined {
+	const realPath = toTokens(realPathInput);
 	if (!realPath.length) return undefined;
 
-	// Prevent prototype injection
-	if (realPath.includes('__proto__') || realPath.includes('prototype')) {
+	// Prevent prototype injection (historical boundary: __proto__/prototype).
+	const segments = toPath(realPathInput, { allowDangerous: true });
+	if (
+		segments.some(
+			(segment) =>
+				segment.kind === 'key' &&
+				(segment.key === '__proto__' || segment.key === 'prototype')
+		)
+	) {
 		throw new Error("Cannot set an object's `__proto__` or `prototype` property");
 	}
 
@@ -155,7 +166,7 @@ export function comparePaths(newObj: unknown, oldObj: unknown) {
 
 		function addDiff() {
 			//console.log('Diff', data.path);
-			diffPaths.set(data.path.join(' '), data.path);
+			diffPaths.set(formatPath(data.path), data.path);
 			return 'skip';
 		}
 
@@ -183,7 +194,7 @@ export function comparePaths(newObj: unknown, oldObj: unknown) {
 
 export function setPaths(
 	obj: Record<string, unknown>,
-	paths: (string | number | symbol)[][],
+	paths: PathInput[],
 	value:
 		| NonNullable<unknown>
 		| ((path: (string | number | symbol)[], data: PathData) => unknown)
@@ -192,21 +203,37 @@ export function setPaths(
 ) {
 	const isFunction = typeof value === 'function';
 
-	for (const path of paths) {
-		const leaf = traversePath(obj, path, ({ parent, key, value }) => {
-			if (value === undefined || typeof value !== 'object') {
-				// If a previous check tainted the node, but the search goes deeper,
-				// so it needs to be replaced with a (parent) node
-				parent[key] = {};
+	for (const pathInput of paths) {
+		const typed = toPath(pathInput);
+		const tokenPath = toTokens(typed);
+
+		setPathMutable(
+			obj,
+			typed,
+			(leaf: ReadResult) => {
+				if (!isFunction) return value;
+
+				// Preserve the historical callback contract:
+				// leaf info with string key and the original token path.
+				const parent = leaf.parent as Record<string, unknown>;
+				const data: PathData = {
+					parent,
+					key: leaf.key,
+					value: leaf.value,
+					path: tokenPath.map(String),
+					isLeaf: true,
+					set: (v) => {
+						parent[leaf.key] = v;
+						return 'skip';
+					}
+				};
+				return value(tokenPath, data);
+			},
+			{
+				// Intermediate missing/non-object nodes become plain objects,
+				// matching the historical tainted/error tree structure.
+				create: () => ({})
 			}
-			return parent[key];
-		});
-		if (leaf) {
-			// Prevent prototype injection
-			if (leaf.key === '__proto__' || leaf.key === 'prototype') {
-				throw new Error("Cannot set an object's `__proto__` or `prototype` property");
-			}
-			leaf.parent[leaf.key] = isFunction ? value(path, leaf) : value;
-		}
+		);
 	}
 }

@@ -1,6 +1,6 @@
 import type { SchemaShape } from './jsonSchema/schemaShape.js';
 import { pathExists, setPaths, traversePath, traversePaths, type PathData } from './traversal.js';
-import { mergePath } from './stringPath.js';
+import { formatPath } from './pathModel.js';
 import type { ValidationErrors } from './superValidate.js';
 import { defaultTypes, defaultValue, type SchemaFieldType } from './jsonSchema/schemaDefaults.js';
 import type { JSONSchema } from './jsonSchema/index.js';
@@ -127,7 +127,7 @@ function _flattenErrors(
 		.flatMap(([key, messages]) => {
 			if (Array.isArray(messages) && messages.length > 0) {
 				const currPath = path.concat([key]);
-				return { path: mergePath(currPath), messages };
+				return { path: formatPath(currPath), messages };
 			} else {
 				return _flattenErrors(
 					errors[key] as unknown as ValidationErrors<Record<string, unknown>>,

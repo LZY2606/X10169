@@ -1,22 +1,22 @@
 import type { AllKeys, IsAny, MergeUnion } from './utils.js';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { formatPath, parsePath, toKeyStrings } from './pathModel.js';
+
+/**
+ * Split a path string into string tokens (historical public API).
+ * Internal code should use the typed path model (`parsePath`) instead.
+ */
 export function splitPath(path: string) {
-	return path
-		.toString()
-		.split(/[[\].]+/)
-		.filter((p) => p);
+	return toKeyStrings(parsePath(path, { allowDangerous: true }));
 }
 
+/**
+ * Merge loose path tokens into a canonical path string.
+ * Internal code should use `formatPath` from the path model instead.
+ */
 export function mergePath(path: (string | number | symbol)[]) {
-	return path.reduce((acc: string, next) => {
-		const key = String(next);
-		if (typeof next === 'number' || /^\d+$/.test(key)) acc += `[${key}]`;
-		else if (!acc) acc += key;
-		else acc += `.${key}`;
-
-		return acc;
-	}, '');
+	return formatPath(path as (string | number)[]);
 }
 
 type DictOrArray = Record<PropertyKey, unknown> | unknown[];

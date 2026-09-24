@@ -15,13 +15,8 @@ import { clone } from '$lib/utils.js';
 import { browser } from '$app/environment';
 import { onDestroy, tick } from 'svelte';
 import { comparePaths, pathExists, setPaths, traversePath, traversePaths } from '$lib/traversal.js';
-import {
-	splitPath,
-	type FormPathType,
-	mergePath,
-	type FormPath,
-	type FormPathLeaves
-} from '$lib/stringPath.js';
+import { type FormPathType, type FormPath, type FormPathLeaves } from '$lib/stringPath.js';
+import { formatPath, parsePath, migrateTreeIndexes } from '$lib/pathModel.js';
 import { beforeNavigate, goto, invalidateAll } from '$app/navigation';
 import { SuperFormError, flattenErrors, mapErrors, updateErrors } from '$lib/errors.js';
 import { cancelFlash, shouldSyncFlash } from './flash.js';
@@ -733,7 +728,7 @@ export function superForm<
 		if (!options.onChange || !event.paths.length || event.type == 'blur') return;
 
 		let changeEvent: ChangeEvent<T>;
-		const paths = event.paths.map(mergePath) as FormPath<T>[];
+		const paths = event.paths.map((path) => formatPath(path)) as FormPath<T>[];
 
 		if (
 			event.type &&
@@ -862,7 +857,7 @@ export function superForm<
 				currentPath.pop();
 			}
 
-			const joinedPath = currentPath.join('.');
+			const joinedPath = formatPath(currentPath);
 
 			const lastPath = error.path[error.path.length - 1];
 			const isObjectError = lastPath == '_errors';
@@ -873,7 +868,7 @@ export function superForm<
 					// If array/object, any part of the path can match. If not, exact match is required
 					return isObjectError
 						? currentPath && path && currentPath.length > 0 && currentPath[0] == path[0]
-						: joinedPath == path.join('.');
+						: joinedPath == formatPath(path);
 				});
 
 			function addError() {
@@ -924,7 +919,7 @@ export function superForm<
 				if (
 					options.validationMethod == 'oninput' ||
 					(type == 'blur' &&
-						Tainted_hasBeenTainted(mergePath(error.path.slice(0, -1)) as FormPath<T>))
+						Tainted_hasBeenTainted(formatPath(error.path.slice(0, -1)) as FormPath<T>))
 				) {
 					return addError();
 				}
@@ -934,7 +929,7 @@ export function superForm<
 				if (
 					type == 'blur' &&
 					isEventError
-					//|| (isErrorInArray &&	Tainted_hasBeenTainted(mergePath(error.path.slice(0, -1)) as FormPath<T>))
+					//|| (isErrorInArray &&	Tainted_hasBeenTainted(formatPath(error.path.slice(0, -1)) as FormPath<T>))
 				) {
 					return addError();
 				}
@@ -1274,7 +1269,7 @@ export function superForm<
 	function Tainted_hasBeenTainted(path?: FormPath<T>): boolean {
 		if (!Data.tainted) return false;
 		if (!path) return !!Data.tainted;
-		const field = pathExists(Data.tainted, splitPath(path));
+		const field = pathExists(Data.tainted, parsePath(path));
 		return !!field && field.key in field.parent;
 	}
 
@@ -1287,7 +1282,7 @@ export function superForm<
 		if (typeof path === 'object') return Tainted__isObjectTainted(path);
 		if (!Data.tainted || path === undefined) return false;
 
-		const field = pathExists(Data.tainted, splitPath(path));
+		const field = pathExists(Data.tainted, parsePath(path));
 		return Tainted__isObjectTainted(field?.value);
 	}
 
@@ -1313,7 +1308,7 @@ export function superForm<
 
 		const paths = comparePaths(newData, Data.form);
 		//console.log('paths:', JSON.stringify(paths));
-		const newTainted = comparePaths(newData, Tainted.clean).map((path) => path.join());
+		const newTainted = comparePaths(newData, Tainted.clean).map((path) => formatPath(path));
 		//console.log('newTainted:', JSON.stringify(newTainted));
 
 		if (paths.length) {
@@ -1322,7 +1317,7 @@ export function superForm<
 
 				setPaths(currentlyTainted, paths, (path, data) => {
 					// If value goes back to the clean value, untaint the path
-					if (!newTainted.includes(path.join())) return undefined;
+					if (!newTainted.includes(formatPath(path))) return undefined;
 
 					const currentValue = traversePath(newData, path);
 					const cleanPath = traversePath(Tainted.clean, path);
@@ -1882,7 +1877,7 @@ export function superForm<
 						// Will be reassembled in superValidate.
 						traversePaths(postData, (data) => {
 							if (data.value instanceof File) {
-								const key = '__superform_file_' + mergePath(data.path);
+								const key = '__superform_file_' + formatPath(data.path);
 								submitData.append(key, data.value);
 								return data.set(undefined);
 							} else if (
@@ -1890,7 +1885,7 @@ export function superForm<
 								data.value.length &&
 								data.value.every((v) => v instanceof File)
 							) {
-								const key = '__superform_files_' + mergePath(data.path);
+								const key = '__superform_files_' + formatPath(data.path);
 								for (const file of data.value) {
 									submitData.append(key, file);
 								}
@@ -2192,7 +2187,7 @@ export function superForm<
 			if (typeof opts.errors == 'string') opts.errors = [opts.errors];
 
 			let data: T;
-			const splittedPath = splitPath(path);
+			const splittedPath = parsePath(path);
 
 			if ('value' in opts) {
 				if (opts.update === true || opts.update === 'value') {
