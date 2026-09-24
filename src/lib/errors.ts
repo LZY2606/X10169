@@ -1,6 +1,6 @@
 import type { SchemaShape } from './jsonSchema/schemaShape.js';
 import { pathExists, setPaths, traversePath, traversePaths, type PathData } from './traversal.js';
-import { mergePath } from './stringPath.js';
+import { formatPath, objectPath, parsePath, toLegacyPath } from './fieldPath.js';
 import type { ValidationErrors } from './superValidate.js';
 import { defaultTypes, defaultValue, type SchemaFieldType } from './jsonSchema/schemaDefaults.js';
 import type { JSONSchema } from './jsonSchema/index.js';
@@ -49,20 +49,21 @@ export function mapErrors(errors: ValidationIssue[], shape: SchemaShape) {
 			continue;
 		}
 
+		const issueSegments = parsePath(error.path.join('.'));
+
 		// Path must filter away number indices, since the object shape doesn't contain these.
 		// Except the last, since otherwise any error in an array will count as an object error.
-		const isLastIndexNumeric = /^\d$/.test(String(error.path[error.path.length - 1]));
+		const lastSegment = issueSegments[issueSegments.length - 1];
+		const isLastIndexNumeric =
+			lastSegment?.kind === 'index' && lastSegment.index >= 0 && lastSegment.index <= 9;
 
 		const objectError =
 			!isLastIndexNumeric &&
-			pathExists(
-				shape,
-				error.path.filter((p) => /\D/.test(String(p)))
-			)?.value;
+			pathExists(shape as Record<string, unknown>, objectPath(issueSegments))?.value;
 
 		//console.log(error.path, error.message, objectError ? '[OBJ]' : '');
 
-		const leaf = traversePath(output, error.path, ({ value, parent, key }) => {
+		const leaf = traversePath(output, toLegacyPath(issueSegments), ({ value, parent, key }) => {
 			if (value === undefined) parent[key] = {};
 			return parent[key];
 		});
@@ -127,7 +128,7 @@ function _flattenErrors(
 		.flatMap(([key, messages]) => {
 			if (Array.isArray(messages) && messages.length > 0) {
 				const currPath = path.concat([key]);
-				return { path: mergePath(currPath), messages };
+				return { path: formatPath(currPath, { quoteSpecial: true }), messages };
 			} else {
 				return _flattenErrors(
 					errors[key] as unknown as ValidationErrors<Record<string, unknown>>,

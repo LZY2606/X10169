@@ -1,6 +1,5 @@
 import type { ValidationErrors } from '$lib/client/index.js';
-import { splitPath } from '$lib/stringPath.js';
-import { traversePath } from '$lib/traversal.js';
+import { locatePath } from '$lib/fieldPath.js';
 
 const noCustomValidityDataAttribute = 'noCustomValidity';
 
@@ -23,7 +22,7 @@ export function setCustomValidityForm(
 			continue;
 		}
 
-		const path = traversePath(errors, splitPath(el.name));
+		const path = locatePath(errors, el.name);
 		const error =
 			path && typeof path.value === 'object' && '_errors' in path.value
 				? path.value._errors

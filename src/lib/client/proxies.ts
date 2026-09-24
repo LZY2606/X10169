@@ -2,8 +2,17 @@
 import { derived, get, writable, type Readable, type Updater, type Writable } from 'svelte/store';
 import type { InputConstraint } from '../jsonSchema/constraints.js';
 import { SuperFormError } from '$lib/errors.js';
-import { pathExists, traversePath } from '../traversal.js';
-import { splitPath, type FormPath, type FormPathLeaves, type FormPathType } from '../stringPath.js';
+import { traversePath } from '../traversal.js';
+import {
+	identityIndexMap,
+	locatePath,
+	migrateArrayPaths,
+	objectPath,
+	parsePath,
+	type FieldPath,
+	toLegacyPath
+} from '../fieldPath.js';
+import { type FormPath, type FormPathLeaves, type FormPathType } from '../stringPath.js';
 import type { FormPathArrays } from '../stringPath.js';
 import type { SuperForm, TaintOption } from './superForm.js';
 import type { IsAny, Prettify } from '$lib/utils.js';
@@ -475,24 +484,21 @@ export function arrayProxy<
 
 	// If array is shortened, delete all keys above length
 	// in errors, so they won't be kept if the array is lengthened again.
-	let lastLength = Array.isArray(get(values)) ? (get(values) as unknown[]).length : 0;
+	// Indexes migrate by element identity (LCS), so middle inserts/removals
+	// keep errors attached to the same item instead of shifting silently.
+	let lastValues: unknown[] = Array.isArray(get(values)) ? (get(values) as unknown[]) : [];
 	values.subscribe(($values) => {
-		const currentLength = Array.isArray($values) ? $values.length : 0;
-		if (currentLength < lastLength) {
+		const currentValues = Array.isArray($values) ? [...($values as unknown[])] : [];
+
+		if (currentValues.length !== lastValues.length || currentValues.some((v, i) => v !== lastValues[i])) {
+			const indexMap = identityIndexMap(lastValues, currentValues);
 			superForm.errors.update(
-				($errors) => {
-					const node = pathExists($errors, splitPath(path));
-					if (!node) return $errors;
-					for (const key in node.value) {
-						if (Number(key) < currentLength) continue;
-						delete node.value[key];
-					}
-					return $errors;
-				},
+				($errors) => migrateArrayPaths($errors, parsePath(String(path)), indexMap),
 				{ force: true }
 			);
 		}
-		lastLength = currentLength;
+
+		lastValues = currentValues;
 	});
 
 	return {
@@ -522,9 +528,9 @@ export function formFieldProxy<
 	path: Path,
 	options?: ProxyOptions
 ): FormFieldProxy<PathType<Type, T, Path>, Path> {
-	const path2 = splitPath(path);
+	const path2 = toLegacyPath(parsePath(path));
 	// Filter out array indices, the constraints structure doesn't contain these.
-	const constraintsPath = path2.filter((p) => /\D/.test(String(p))).join('.');
+	const constraintsPath = objectPath(path2).join('.');
 
 	const taintedProxy = derived<typeof superForm.tainted, boolean | undefined>(
 		superForm.tainted,
@@ -574,11 +580,11 @@ export function formFieldProxy<
 
 function updateProxyField<T extends Record<string, unknown>, Path extends string, Type = any>(
 	obj: T,
-	path: (string | number | symbol)[],
+	path: FieldPath,
 	updater: Updater<PathType<Type, T, Path>>
 ) {
-	const output = traversePath(obj, path, ({ parent, key, value }) => {
-		if (value === undefined) parent[key] = /\D/.test(key) ? {} : [];
+	const output = locatePath(obj, path, ({ parent, key, value, segment }) => {
+		if (value === undefined) parent[key] = segment.kind === 'index' ? [] : {};
 		return parent[key];
 	});
 	if (output) {
@@ -600,10 +606,11 @@ function superFieldProxy<T extends Record<string, unknown>, Path extends string,
 	baseOptions?: ProxyOptions
 ): SuperFieldProxy<PathType<Type, T, Path>> {
 	const form = superForm.form;
-	const path2 = splitPath(path);
+	const path2: FieldPath = parsePath(path);
+	const path2Legacy = toLegacyPath(path2);
 
 	const proxy = derived(form, ($form: object) => {
-		const data = traversePath($form, path2);
+		const data = traversePath($form, path2Legacy);
 		return data?.value;
 	});
 
@@ -647,14 +654,15 @@ export function fieldProxy<
 	path: Path,
 	options?: ProxyOptions
 ): FieldProxy<PathType<Type, T, Path>> {
-	const path2 = splitPath(path);
+	const path2: FieldPath = parsePath(path);
+	const path2Legacy = toLegacyPath(path2);
 
 	if (isSuperForm(form, options)) {
 		return superFieldProxy(form, path, options);
 	}
 
 	const proxy = derived(form, ($form) => {
-		const data = traversePath($form, path2);
+		const data = traversePath($form, path2Legacy);
 		return data?.value;
 	});
 

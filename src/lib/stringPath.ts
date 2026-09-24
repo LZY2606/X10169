@@ -1,22 +1,13 @@
 import type { AllKeys, IsAny, MergeUnion } from './utils.js';
+import { formatPath, parsePath, toLegacyPath } from './fieldPath.js';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export function splitPath(path: string) {
-	return path
-		.toString()
-		.split(/[[\].]+/)
-		.filter((p) => p);
+	return toLegacyPath(parsePath(path.toString())).map(String);
 }
 
 export function mergePath(path: (string | number | symbol)[]) {
-	return path.reduce((acc: string, next) => {
-		const key = String(next);
-		if (typeof next === 'number' || /^\d+$/.test(key)) acc += `[${key}]`;
-		else if (!acc) acc += key;
-		else acc += `.${key}`;
-
-		return acc;
-	}, '');
+	return formatPath(path as (string | number)[], { quoteSpecial: true });
 }
 
 type DictOrArray = Record<PropertyKey, unknown> | unknown[];

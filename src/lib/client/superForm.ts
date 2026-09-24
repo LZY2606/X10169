@@ -16,12 +16,12 @@ import { browser } from '$app/environment';
 import { onDestroy, tick } from 'svelte';
 import { comparePaths, pathExists, setPaths, traversePath, traversePaths } from '$lib/traversal.js';
 import {
-	splitPath,
 	type FormPathType,
 	mergePath,
 	type FormPath,
 	type FormPathLeaves
 } from '$lib/stringPath.js';
+import { formatPath, getPath, locatePath, parsePath, samePath, toLegacyPath } from '$lib/fieldPath.js';
 import { beforeNavigate, goto, invalidateAll } from '$app/navigation';
 import { SuperFormError, flattenErrors, mapErrors, updateErrors } from '$lib/errors.js';
 import { cancelFlash, shouldSyncFlash } from './flash.js';
@@ -872,8 +872,8 @@ export function superForm<
 				paths.some((path) => {
 					// If array/object, any part of the path can match. If not, exact match is required
 					return isObjectError
-						? currentPath && path && currentPath.length > 0 && currentPath[0] == path[0]
-						: joinedPath == path.join('.');
+						? currentPath.length > 0 && currentPath[0] == String(path[0])
+						: samePath(currentPath, path);
 				});
 
 			function addError() {
