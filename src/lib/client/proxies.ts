@@ -3,7 +3,15 @@ import { derived, get, writable, type Readable, type Updater, type Writable } fr
 import type { InputConstraint } from '../jsonSchema/constraints.js';
 import { SuperFormError } from '$lib/errors.js';
 import { pathExists, traversePath } from '../traversal.js';
-import { splitPath, type FormPath, type FormPathLeaves, type FormPathType } from '../stringPath.js';
+import { type FormPath, type FormPathLeaves, type FormPathType } from '../stringPath.js';
+import {
+	inferArraySplice,
+	splicePathTree,
+	toKeys,
+	toSegments,
+	pathKey,
+	type PathInput
+} from '../pathModel.js';
 import type { FormPathArrays } from '../stringPath.js';
 import type { SuperForm, TaintOption } from './superForm.js';
 import type { IsAny, Prettify } from '$lib/utils.js';
@@ -473,26 +481,21 @@ export function arrayProxy<
 
 	const values = superFieldProxy(superForm, path, options);
 
-	// If array is shortened, delete all keys above length
-	// in errors, so they won't be kept if the array is lengthened again.
-	let lastLength = Array.isArray(get(values)) ? (get(values) as unknown[]).length : 0;
+	// When array elements are inserted or removed, migrate the errors
+	// to follow the elements, using the shared path model. If the array
+	// is shortened, errors for removed elements are deleted, so they
+	// won't be kept if the array is lengthened again.
+	let lastValues = Array.isArray(get(values)) ? (get(values) as unknown[]) : undefined;
 	values.subscribe(($values) => {
-		const currentLength = Array.isArray($values) ? $values.length : 0;
-		if (currentLength < lastLength) {
+		const currentValues = Array.isArray($values) ? $values : undefined;
+		if (lastValues && currentValues && currentValues.length !== lastValues.length) {
+			const splice = inferArraySplice(lastValues, currentValues);
 			superForm.errors.update(
-				($errors) => {
-					const node = pathExists($errors, splitPath(path));
-					if (!node) return $errors;
-					for (const key in node.value) {
-						if (Number(key) < currentLength) continue;
-						delete node.value[key];
-					}
-					return $errors;
-				},
+				($errors) => splicePathTree($errors, path, splice),
 				{ force: true }
 			);
 		}
-		lastLength = currentLength;
+		lastValues = currentValues;
 	});
 
 	return {
@@ -522,9 +525,9 @@ export function formFieldProxy<
 	path: Path,
 	options?: ProxyOptions
 ): FormFieldProxy<PathType<Type, T, Path>, Path> {
-	const path2 = splitPath(path);
+	const path2 = toKeys(path);
 	// Filter out array indices, the constraints structure doesn't contain these.
-	const constraintsPath = path2.filter((p) => /\D/.test(String(p))).join('.');
+	const constraintsPath = pathKey(toSegments(path).filter((seg) => seg.kind === 'key'));
 
 	const taintedProxy = derived<typeof superForm.tainted, boolean | undefined>(
 		superForm.tainted,
@@ -574,11 +577,15 @@ export function formFieldProxy<
 
 function updateProxyField<T extends Record<string, unknown>, Path extends string, Type = any>(
 	obj: T,
-	path: (string | number | symbol)[],
+	path: PathInput,
 	updater: Updater<PathType<Type, T, Path>>
 ) {
-	const output = traversePath(obj, path, ({ parent, key, value }) => {
-		if (value === undefined) parent[key] = /\D/.test(key) ? {} : [];
+	const segments = toSegments(path);
+	const output = traversePath(obj, segments, ({ parent, key, value, path: currentPath }) => {
+		if (value === undefined) {
+			const nextSeg = segments[currentPath.length];
+			parent[key] = nextSeg && nextSeg.kind === 'index' ? [] : {};
+		}
 		return parent[key];
 	});
 	if (output) {
@@ -600,7 +607,7 @@ function superFieldProxy<T extends Record<string, unknown>, Path extends string,
 	baseOptions?: ProxyOptions
 ): SuperFieldProxy<PathType<Type, T, Path>> {
 	const form = superForm.form;
-	const path2 = splitPath(path);
+	const path2 = toKeys(path);
 
 	const proxy = derived(form, ($form: object) => {
 		const data = traversePath($form, path2);
@@ -647,7 +654,7 @@ export function fieldProxy<
 	path: Path,
 	options?: ProxyOptions
 ): FieldProxy<PathType<Type, T, Path>> {
-	const path2 = splitPath(path);
+	const path2 = toKeys(path);
 
 	if (isSuperForm(form, options)) {
 		return superFieldProxy(form, path, options);

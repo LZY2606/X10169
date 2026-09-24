@@ -1,5 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import { assertSafeSegments, pathKey, toKeys, toSegments, type PathInput } from './pathModel.js';
+
 export type PathData = {
 	parent: any;
 	key: string;
@@ -29,17 +31,18 @@ function isInvalidPath(originalPath: (string | number | symbol)[], pathData: Pat
 
 export function pathExists<T extends object>(
 	obj: T,
-	path: (string | number | symbol)[],
+	path: PathInput,
 	options: {
 		value?: (value: unknown) => boolean;
 		modifier?: (data: PathData) => undefined | unknown | void;
 	} = {}
 ): PathData | undefined {
+	const keys = toKeys(path);
 	if (!options.modifier) {
-		options.modifier = (pathData) => (isInvalidPath(path, pathData) ? undefined : pathData.value);
+		options.modifier = (pathData) => (isInvalidPath(keys, pathData) ? undefined : pathData.value);
 	}
 
-	const exists = traversePath(obj, path, options.modifier);
+	const exists = traversePath(obj, keys, options.modifier);
 	if (!exists) return undefined;
 
 	if (options.value === undefined) return exists;
@@ -48,21 +51,20 @@ export function pathExists<T extends object>(
 
 export function traversePath<T extends object>(
 	obj: T,
-	realPath: (string | number | symbol)[],
+	realPath: PathInput,
 	modifier?: (data: PathData) => undefined | unknown | void
 ): PathData | undefined {
-	if (!realPath.length) return undefined;
+	const path2 = toKeys(realPath);
+	if (!path2.length) return undefined;
 
 	// Prevent prototype injection
-	if (realPath.includes('__proto__') || realPath.includes('prototype')) {
-		throw new Error("Cannot set an object's `__proto__` or `prototype` property");
-	}
+	assertSafeSegments(toSegments(realPath));
 
-	const path = [realPath[0]];
+	const path = [path2[0]];
 
 	let parent = obj;
 
-	while (parent && path.length < realPath.length) {
+	while (parent && path.length < path2.length) {
 		const key = path[path.length - 1] as keyof typeof parent;
 
 		const value = modifier
@@ -79,17 +81,17 @@ export function traversePath<T extends object>(
 		if (value === undefined) return undefined;
 		else parent = value as T;
 
-		path.push(realPath[path.length]);
+		path.push(path2[path.length]);
 	}
 
 	if (!parent) return undefined;
 
-	const key = realPath[realPath.length - 1];
+	const key = path2[path2.length - 1];
 	return {
 		parent,
 		key: String(key),
 		value: parent[key as keyof typeof parent],
-		path: realPath.map((p) => String(p)),
+		path: path2.map((p) => String(p)),
 		isLeaf: true,
 		set: (v) => setPath(parent, key as keyof typeof parent, v)
 	};
@@ -155,7 +157,7 @@ export function comparePaths(newObj: unknown, oldObj: unknown) {
 
 		function addDiff() {
 			//console.log('Diff', data.path);
-			diffPaths.set(data.path.join(' '), data.path);
+			diffPaths.set(pathKey(data.path), data.path);
 			return 'skip';
 		}
 
@@ -183,7 +185,7 @@ export function comparePaths(newObj: unknown, oldObj: unknown) {
 
 export function setPaths(
 	obj: Record<string, unknown>,
-	paths: (string | number | symbol)[][],
+	paths: PathInput[],
 	value:
 		| NonNullable<unknown>
 		| ((path: (string | number | symbol)[], data: PathData) => unknown)
@@ -192,7 +194,8 @@ export function setPaths(
 ) {
 	const isFunction = typeof value === 'function';
 
-	for (const path of paths) {
+	for (const pathInput of paths) {
+		const path = toKeys(pathInput);
 		const leaf = traversePath(obj, path, ({ parent, key, value }) => {
 			if (value === undefined || typeof value !== 'object') {
 				// If a previous check tainted the node, but the search goes deeper,
