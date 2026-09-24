@@ -1,5 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import { formatFieldPath, segmentsFromPathArray } from './pathModel.js';
+
 export type PathData = {
 	parent: any;
 	key: string;
@@ -155,7 +157,7 @@ export function comparePaths(newObj: unknown, oldObj: unknown) {
 
 		function addDiff() {
 			//console.log('Diff', data.path);
-			diffPaths.set(data.path.join(' '), data.path);
+			diffPaths.set(formatFieldPath(segmentsFromPathArray(data.path)), data.path);
 			return 'skip';
 		}
 

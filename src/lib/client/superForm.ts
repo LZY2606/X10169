@@ -22,6 +22,13 @@ import {
 	type FormPath,
 	type FormPathLeaves
 } from '$lib/stringPath.js';
+import {
+	formatFieldPath,
+	parseFieldPath,
+	pathsEqual,
+	segmentsFromPathArray,
+	setPathImmutable
+} from '$lib/pathModel.js';
 import { beforeNavigate, goto, invalidateAll } from '$app/navigation';
 import { SuperFormError, flattenErrors, mapErrors, updateErrors } from '$lib/errors.js';
 import { cancelFlash, shouldSyncFlash } from './flash.js';
@@ -862,7 +869,8 @@ export function superForm<
 				currentPath.pop();
 			}
 
-			const joinedPath = currentPath.join('.');
+			const currentSegments = segmentsFromPathArray(currentPath);
+			const joinedPath = formatFieldPath(currentSegments);
 
 			const lastPath = error.path[error.path.length - 1];
 			const isObjectError = lastPath == '_errors';
@@ -873,7 +881,7 @@ export function superForm<
 					// If array/object, any part of the path can match. If not, exact match is required
 					return isObjectError
 						? currentPath && path && currentPath.length > 0 && currentPath[0] == path[0]
-						: joinedPath == path.join('.');
+						: pathsEqual(currentSegments, segmentsFromPathArray(path));
 				});
 
 			function addError() {
@@ -1313,7 +1321,11 @@ export function superForm<
 
 		const paths = comparePaths(newData, Data.form);
 		//console.log('paths:', JSON.stringify(paths));
-		const newTainted = comparePaths(newData, Tainted.clean).map((path) => path.join());
+		const newTainted = new Set(
+			comparePaths(newData, Tainted.clean).map((path) =>
+				formatFieldPath(segmentsFromPathArray(path))
+			)
+		);
 		//console.log('newTainted:', JSON.stringify(newTainted));
 
 		if (paths.length) {
@@ -1322,7 +1334,7 @@ export function superForm<
 
 				setPaths(currentlyTainted, paths, (path, data) => {
 					// If value goes back to the clean value, untaint the path
-					if (!newTainted.includes(path.join())) return undefined;
+					if (!newTainted.has(formatFieldPath(segmentsFromPathArray(path)))) return undefined;
 
 					const currentValue = traversePath(newData, path);
 					const cleanPath = traversePath(Tainted.clean, path);
@@ -2205,10 +2217,11 @@ export function superForm<
 						{ taint: opts.taint }
 					);
 					data = Data.form;
-				} else {
-					data = clone(Data.form);
-					setPaths(data, [splittedPath], opts.value);
-				}
+			} else {
+				// Structural sharing: only the target branch is cloned,
+				// so validating a single field never deep-clones the whole form.
+				data = setPathImmutable(Data.form, parseFieldPath(path as string), opts.value);
+			}
 			} else {
 				data = Data.form;
 			}

@@ -10,6 +10,7 @@ import {
 } from './adapters.js';
 import { memoize } from '$lib/memoize.js';
 import type { SchemaTypes } from '@vinejs/vine/types';
+import { splitPath } from '$lib/stringPath.js';
 
 async function modules() {
 	const { Vine, errors } = await import(/* webpackIgnore: true */ '@vinejs/vine');
@@ -34,7 +35,7 @@ async function validate<T extends SchemaTypes>(
 			return {
 				success: false,
 				issues: e.messages.map((m: { field: string; message: string }) => ({
-					path: m.field.split('.'),
+					path: splitPath(m.field),
 					message: m.message
 				}))
 			};

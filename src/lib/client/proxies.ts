@@ -2,8 +2,16 @@
 import { derived, get, writable, type Readable, type Updater, type Writable } from 'svelte/store';
 import type { InputConstraint } from '../jsonSchema/constraints.js';
 import { SuperFormError } from '$lib/errors.js';
-import { pathExists, traversePath } from '../traversal.js';
+import { traversePath } from '../traversal.js';
 import { splitPath, type FormPath, type FormPathLeaves, type FormPathType } from '../stringPath.js';
+import {
+	formatFieldPath,
+	getPath,
+	parseFieldPath,
+	remapTreeForArraySplice,
+	segmentsFromPathArray,
+	setPathImmutable
+} from '../pathModel.js';
 import type { FormPathArrays } from '../stringPath.js';
 import type { SuperForm, TaintOption } from './superForm.js';
 import type { IsAny, Prettify } from '$lib/utils.js';
@@ -481,13 +489,14 @@ export function arrayProxy<
 		if (currentLength < lastLength) {
 			superForm.errors.update(
 				($errors) => {
-					const node = pathExists($errors, splitPath(path));
-					if (!node) return $errors;
-					for (const key in node.value) {
-						if (Number(key) < currentLength) continue;
-						delete node.value[key];
-					}
-					return $errors;
+					// Migrate the errors tree with the typed path model, so array
+					// item errors are removed by segment identity, not string keys.
+					return remapTreeForArraySplice(
+						$errors,
+						parseFieldPath(path),
+						currentLength,
+						lastLength - currentLength
+					);
 				},
 				{ force: true }
 			);
@@ -524,7 +533,9 @@ export function formFieldProxy<
 ): FormFieldProxy<PathType<Type, T, Path>, Path> {
 	const path2 = splitPath(path);
 	// Filter out array indices, the constraints structure doesn't contain these.
-	const constraintsPath = path2.filter((p) => /\D/.test(String(p))).join('.');
+	const constraintsPath = formatFieldPath(
+		parseFieldPath(path).filter((seg) => seg.kind === 'key')
+	);
 
 	const taintedProxy = derived<typeof superForm.tainted, boolean | undefined>(
 		superForm.tainted,
@@ -577,15 +588,10 @@ function updateProxyField<T extends Record<string, unknown>, Path extends string
 	path: (string | number | symbol)[],
 	updater: Updater<PathType<Type, T, Path>>
 ) {
-	const output = traversePath(obj, path, ({ parent, key, value }) => {
-		if (value === undefined) parent[key] = /\D/.test(key) ? {} : [];
-		return parent[key];
-	});
-	if (output) {
-		const newValue = updater(output.value);
-		output.parent[output.key] = newValue;
-	}
-	return obj;
+	// Structural sharing update through the typed path model: only the
+	// containers along the target branch are cloned, never the whole form.
+	const segments = segmentsFromPathArray(path);
+	return setPathImmutable(obj, segments, updater(getPath(obj, segments)));
 }
 
 type SuperFieldProxy<T> = {
