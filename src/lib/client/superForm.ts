@@ -16,12 +16,12 @@ import { browser } from '$app/environment';
 import { onDestroy, tick } from 'svelte';
 import { comparePaths, pathExists, setPaths, traversePath, traversePaths } from '$lib/traversal.js';
 import {
-	splitPath,
 	type FormPathType,
 	mergePath,
 	type FormPath,
 	type FormPathLeaves
 } from '$lib/stringPath.js';
+import { formatPath, parsePath, segmentsFromArray, toKeyArray } from '$lib/pathModel.js';
 import { beforeNavigate, goto, invalidateAll } from '$app/navigation';
 import { SuperFormError, flattenErrors, mapErrors, updateErrors } from '$lib/errors.js';
 import { cancelFlash, shouldSyncFlash } from './flash.js';
@@ -862,7 +862,7 @@ export function superForm<
 				currentPath.pop();
 			}
 
-			const joinedPath = currentPath.join('.');
+			const joinedPath = formatPath(segmentsFromArray(currentPath));
 
 			const lastPath = error.path[error.path.length - 1];
 			const isObjectError = lastPath == '_errors';
@@ -873,7 +873,7 @@ export function superForm<
 					// If array/object, any part of the path can match. If not, exact match is required
 					return isObjectError
 						? currentPath && path && currentPath.length > 0 && currentPath[0] == path[0]
-						: joinedPath == path.join('.');
+						: joinedPath == formatPath(segmentsFromArray(path));
 				});
 
 			function addError() {
@@ -1274,7 +1274,7 @@ export function superForm<
 	function Tainted_hasBeenTainted(path?: FormPath<T>): boolean {
 		if (!Data.tainted) return false;
 		if (!path) return !!Data.tainted;
-		const field = pathExists(Data.tainted, splitPath(path));
+		const field = pathExists(Data.tainted, toKeyArray(parsePath(path)));
 		return !!field && field.key in field.parent;
 	}
 
@@ -1287,7 +1287,7 @@ export function superForm<
 		if (typeof path === 'object') return Tainted__isObjectTainted(path);
 		if (!Data.tainted || path === undefined) return false;
 
-		const field = pathExists(Data.tainted, splitPath(path));
+		const field = pathExists(Data.tainted, toKeyArray(parsePath(path)));
 		return Tainted__isObjectTainted(field?.value);
 	}
 
@@ -2192,7 +2192,7 @@ export function superForm<
 			if (typeof opts.errors == 'string') opts.errors = [opts.errors];
 
 			let data: T;
-			const splittedPath = splitPath(path);
+			const splittedPath = toKeyArray(parsePath(path));
 
 			if ('value' in opts) {
 				if (opts.update === true || opts.update === 'value') {

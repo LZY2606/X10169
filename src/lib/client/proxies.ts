@@ -2,8 +2,18 @@
 import { derived, get, writable, type Readable, type Updater, type Writable } from 'svelte/store';
 import type { InputConstraint } from '../jsonSchema/constraints.js';
 import { SuperFormError } from '$lib/errors.js';
-import { pathExists, traversePath } from '../traversal.js';
-import { splitPath, type FormPath, type FormPathLeaves, type FormPathType } from '../stringPath.js';
+import { traversePath } from '../traversal.js';
+import { type FormPath, type FormPathLeaves, type FormPathType } from '../stringPath.js';
+import {
+	formatPath,
+	getPath,
+	objectPath,
+	parsePath,
+	removeArrayIndices,
+	setPathImmutable,
+	toKeyArray,
+	type FieldPath
+} from '../pathModel.js';
 import type { FormPathArrays } from '../stringPath.js';
 import type { SuperForm, TaintOption } from './superForm.js';
 import type { IsAny, Prettify } from '$lib/utils.js';
@@ -424,6 +434,44 @@ export type ArrayProxy<T, Path = string, Errors = ValueErrors, ExtraValues = nev
 	valueErrors: Writable<Errors>;
 };
 
+/**
+ * Compute which indices were removed between two versions of an array,
+ * by matching a common prefix and suffix through element identity.
+ * Falls back to truncation at the end for complex changes.
+ */
+function removedArrayIndices(previous: unknown[], current: unknown[]): number[] {
+	if (current.length >= previous.length) return [];
+
+	let prefix = 0;
+	while (prefix < current.length && Object.is(previous[prefix], current[prefix])) prefix++;
+
+	let suffix = 0;
+	while (
+		suffix < current.length - prefix &&
+		Object.is(previous[previous.length - 1 - suffix], current[current.length - 1 - suffix])
+	) {
+		suffix++;
+	}
+
+	// If prefix + suffix accounts for the whole new array, the removed
+	// elements are exactly the ones in between.
+	const end = prefix + suffix === current.length ? previous.length - suffix : previous.length;
+	const removed: number[] = [];
+	for (let i = prefix; i < end; i++) removed.push(i);
+	return removed;
+}
+
+/**
+ * Migrate an errors/tainted store after array elements were removed,
+ * using the shared path model so the update is immutable and targeted
+ * at the array path only.
+ */
+function migrateArrayStore<S>(store: S, arrayPath: FieldPath, removed: number[]): S {
+	const node = getPath(store, arrayPath);
+	if (node === null || node === undefined || typeof node !== 'object') return store;
+	return setPathImmutable(store, arrayPath, removeArrayIndices(node, removed));
+}
+
 export function arrayProxy<
 	T extends Record<string, unknown>,
 	Path extends FormPathArrays<T, ArrType>,
@@ -434,6 +482,8 @@ export function arrayProxy<
 	options?: { taint?: TaintOption }
 ): ArrayProxy<FormPathType<T, Path> extends (infer U)[] ? U : never, Path> {
 	const formErrors = fieldProxy(superForm.errors, `${path}` as any);
+
+	const arrayPath: FieldPath = parsePath(path);
 
 	const onlyFieldErrors = derived<typeof formErrors, ValueErrors>(formErrors, ($errors) => {
 		const output: ValueErrors = [];
@@ -473,26 +523,22 @@ export function arrayProxy<
 
 	const values = superFieldProxy(superForm, path, options);
 
-	// If array is shortened, delete all keys above length
-	// in errors, so they won't be kept if the array is lengthened again.
-	let lastLength = Array.isArray(get(values)) ? (get(values) as unknown[]).length : 0;
+	// When array elements are removed, migrate the errors so they keep
+	// pointing at the same elements. Removed indices are computed by element
+	// identity (common prefix/suffix), falling back to truncation at the end,
+	// matching the previous public contract. Tainted state is intentionally
+	// not migrated here; it is recomputed against the clean form state by
+	// Tainted_update on every form update.
+	let lastValues = Array.isArray(get(values)) ? (get(values) as unknown[]).slice() : [];
 	values.subscribe(($values) => {
-		const currentLength = Array.isArray($values) ? $values.length : 0;
-		if (currentLength < lastLength) {
-			superForm.errors.update(
-				($errors) => {
-					const node = pathExists($errors, splitPath(path));
-					if (!node) return $errors;
-					for (const key in node.value) {
-						if (Number(key) < currentLength) continue;
-						delete node.value[key];
-					}
-					return $errors;
-				},
-				{ force: true }
-			);
-		}
-		lastLength = currentLength;
+		const current = Array.isArray($values) ? ($values as unknown[]) : [];
+		const removed = removedArrayIndices(lastValues, current);
+		lastValues = current.slice();
+		if (!removed.length) return;
+
+		superForm.errors.update(($errors) => migrateArrayStore($errors, arrayPath, removed), {
+			force: true
+		});
 	});
 
 	return {
@@ -522,9 +568,9 @@ export function formFieldProxy<
 	path: Path,
 	options?: ProxyOptions
 ): FormFieldProxy<PathType<Type, T, Path>, Path> {
-	const path2 = splitPath(path);
+	const path2 = toKeyArray(parsePath(path));
 	// Filter out array indices, the constraints structure doesn't contain these.
-	const constraintsPath = path2.filter((p) => /\D/.test(String(p))).join('.');
+	const constraintsPath = formatPath(objectPath(parsePath(path)));
 
 	const taintedProxy = derived<typeof superForm.tainted, boolean | undefined>(
 		superForm.tainted,
@@ -600,7 +646,7 @@ function superFieldProxy<T extends Record<string, unknown>, Path extends string,
 	baseOptions?: ProxyOptions
 ): SuperFieldProxy<PathType<Type, T, Path>> {
 	const form = superForm.form;
-	const path2 = splitPath(path);
+	const path2 = toKeyArray(parsePath(path));
 
 	const proxy = derived(form, ($form: object) => {
 		const data = traversePath($form, path2);
@@ -647,7 +693,7 @@ export function fieldProxy<
 	path: Path,
 	options?: ProxyOptions
 ): FieldProxy<PathType<Type, T, Path>> {
-	const path2 = splitPath(path);
+	const path2 = toKeyArray(parsePath(path));
 
 	if (isSuperForm(form, options)) {
 		return superFieldProxy(form, path, options);

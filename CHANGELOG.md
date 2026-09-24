@@ -5,6 +5,18 @@ Headlines: Added, Changed, Deprecated, Removed, Fixed, Security
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Field path handling is now unified in an internal typed path model (`src/lib/pathModel.ts`). Server errors, client validation, tainted state, constraints and snapshot restore all consume the same parsed representation, which explicitly distinguishes object keys from array indices and supports escaped keys containing dots or brackets (for example `["a.b"]`). The public `splitPath`/`mergePath` functions are kept and now delegate to the model, so the public API, error object format and serialization format are unchanged.
+- Path updates and deletions through the model are immutable with structural sharing, so hot paths no longer require deep-cloning the form to change a single branch.
+
+### Fixed
+
+- When an array element is removed in the middle through `arrayProxy`, field errors now migrate with their element (by identity, falling back to truncation at the end) instead of being left at stale indices or only truncated from the end.
+- Numeric array indices with more than one digit are no longer treated as object keys when mapping validation errors to the schema shape.
+
 ## [2.30.2] - 2026-07-04
 
 ### Security

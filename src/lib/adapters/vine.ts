@@ -9,6 +9,7 @@ import {
 	type InferIn
 } from './adapters.js';
 import { memoize } from '$lib/memoize.js';
+import { parsePath, toKeyArray } from '$lib/pathModel.js';
 import type { SchemaTypes } from '@vinejs/vine/types';
 
 async function modules() {
@@ -34,7 +35,7 @@ async function validate<T extends SchemaTypes>(
 			return {
 				success: false,
 				issues: e.messages.map((m: { field: string; message: string }) => ({
-					path: m.field.split('.'),
+					path: toKeyArray(parsePath(m.field)),
 					message: m.message
 				}))
 			};
