@@ -1,4 +1,5 @@
 import { traversePath, traversePaths } from '$lib/traversal.js';
+import { fromPathArray, objectPathOnly, toPathArray } from '$lib/pathModel.js';
 import { memoize } from '$lib/memoize.js';
 import type { ClientValidationAdapter, ValidationIssue } from './adapters.js';
 import type { MaybePromise } from '$lib/utils.js';
@@ -61,7 +62,7 @@ function _superform<T extends Record<string, unknown>, T2 extends Partial<T> = P
 
 			traversePaths(newData, async ({ value, path }) => {
 				// Filter out array indices, the validator structure doesn't contain these.
-				const validationPath = path.filter((p) => /\D/.test(String(p)));
+				const validationPath = toPathArray(objectPathOnly(fromPathArray(path)));
 				const maybeValidator = traversePath(schema, validationPath);
 
 				if (typeof maybeValidator?.value === 'function') {

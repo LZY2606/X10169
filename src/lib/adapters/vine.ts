@@ -1,3 +1,4 @@
+import { toPathArray, parsePath } from '$lib/pathModel.js';
 import {
 	createAdapter,
 	createJsonSchema,
@@ -34,7 +35,7 @@ async function validate<T extends SchemaTypes>(
 			return {
 				success: false,
 				issues: e.messages.map((m: { field: string; message: string }) => ({
-					path: m.field.split('.'),
+					path: toPathArray(parsePath(m.field)),
 					message: m.message
 				}))
 			};
