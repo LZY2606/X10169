@@ -1,22 +1,21 @@
+import { formatPath, parsePath, toPathArray, toSegments } from './pathModel.js';
 import type { AllKeys, IsAny, MergeUnion } from './utils.js';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
+/**
+ * Legacy compat wrapper around the typed path model (pathModel.ts).
+ * Parses a string path into a string array, e.g. 'a.b[0]' -> ['a', 'b', '0'].
+ */
 export function splitPath(path: string) {
-	return path
-		.toString()
-		.split(/[[\].]+/)
-		.filter((p) => p);
+	return toPathArray(parsePath(path)).map(String);
 }
 
+/**
+ * Legacy compat wrapper around the typed path model (pathModel.ts).
+ * Merges a path array into a canonical string path, e.g. ['a', 'b', 0] -> 'a.b[0]'.
+ */
 export function mergePath(path: (string | number | symbol)[]) {
-	return path.reduce((acc: string, next) => {
-		const key = String(next);
-		if (typeof next === 'number' || /^\d+$/.test(key)) acc += `[${key}]`;
-		else if (!acc) acc += key;
-		else acc += `.${key}`;
-
-		return acc;
-	}, '');
+	return formatPath(toSegments(path));
 }
 
 type DictOrArray = Record<PropertyKey, unknown> | unknown[];

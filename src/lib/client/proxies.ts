@@ -2,8 +2,15 @@
 import { derived, get, writable, type Readable, type Updater, type Writable } from 'svelte/store';
 import type { InputConstraint } from '../jsonSchema/constraints.js';
 import { SuperFormError } from '$lib/errors.js';
-import { pathExists, traversePath } from '../traversal.js';
-import { splitPath, type FormPath, type FormPathLeaves, type FormPathType } from '../stringPath.js';
+import { traversePath } from '../traversal.js';
+import { type FormPath, type FormPathLeaves, type FormPathType } from '../stringPath.js';
+import {
+	formatPath,
+	keySegmentsOnly,
+	parsePath,
+	pruneArrayLength,
+	toPathArray
+} from '../pathModel.js';
 import type { FormPathArrays } from '../stringPath.js';
 import type { SuperForm, TaintOption } from './superForm.js';
 import type { IsAny, Prettify } from '$lib/utils.js';
@@ -480,15 +487,7 @@ export function arrayProxy<
 		const currentLength = Array.isArray($values) ? $values.length : 0;
 		if (currentLength < lastLength) {
 			superForm.errors.update(
-				($errors) => {
-					const node = pathExists($errors, splitPath(path));
-					if (!node) return $errors;
-					for (const key in node.value) {
-						if (Number(key) < currentLength) continue;
-						delete node.value[key];
-					}
-					return $errors;
-				},
+				($errors) => pruneArrayLength($errors, parsePath(path), currentLength),
 				{ force: true }
 			);
 		}
@@ -522,9 +521,10 @@ export function formFieldProxy<
 	path: Path,
 	options?: ProxyOptions
 ): FormFieldProxy<PathType<Type, T, Path>, Path> {
-	const path2 = splitPath(path);
+	const segments = parsePath(path);
+	const path2 = toPathArray(segments);
 	// Filter out array indices, the constraints structure doesn't contain these.
-	const constraintsPath = path2.filter((p) => /\D/.test(String(p))).join('.');
+	const constraintsPath = formatPath(keySegmentsOnly(segments));
 
 	const taintedProxy = derived<typeof superForm.tainted, boolean | undefined>(
 		superForm.tainted,
@@ -600,7 +600,7 @@ function superFieldProxy<T extends Record<string, unknown>, Path extends string,
 	baseOptions?: ProxyOptions
 ): SuperFieldProxy<PathType<Type, T, Path>> {
 	const form = superForm.form;
-	const path2 = splitPath(path);
+	const path2 = toPathArray(parsePath(path));
 
 	const proxy = derived(form, ($form: object) => {
 		const data = traversePath($form, path2);
@@ -647,7 +647,7 @@ export function fieldProxy<
 	path: Path,
 	options?: ProxyOptions
 ): FieldProxy<PathType<Type, T, Path>> {
-	const path2 = splitPath(path);
+	const path2 = toPathArray(parsePath(path));
 
 	if (isSuperForm(form, options)) {
 		return superFieldProxy(form, path, options);
